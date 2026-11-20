@@ -5,6 +5,14 @@ on the underlying, and alerts you. **It never places, modifies or cancels orders
 order code, and its HTTP layer refuses every Schwab request except market-data GETs and the
 OAuth token refresh.
 
+## Windows: double-click setup
+
+1. Install Python from https://www.python.org/downloads/ and tick **Add python.exe to PATH**.
+2. Download this repo as a ZIP (green **Code** button, **Download ZIP**) and right-click it, then **Extract All**.
+3. In the extracted folder, double-click `install.bat` (once per computer).
+4. Double-click `demo.bat` to check that everything works. It replays a real day, at any hour.
+5. Live day: create `trades\live.json` with your trade, then double-click `start.bat`.
+
 ## Quick start
 
 ```bash
