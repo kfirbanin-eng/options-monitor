@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import schwab_client
-from feeds import Bar, PaperFeed, ReplayFeed
+from feeds import Bar, ModelOptionFeed, PaperFeed, ReplayFeed, YahooFeed
 from indicators import ema, psar
 from monitor import Monitor
 from notifier import Notifier
@@ -284,6 +284,51 @@ class Replay(unittest.TestCase):
         feed = ReplayFeed(trade, ROOT / "data" / "spy_2026-11-19.json")
         now = feed.clock.now()
         self.assertTrue(all(b.end <= now for b in feed.bars("SPY", 5)))
+
+
+class YahooAndModel(unittest.TestCase):
+    def test_yahoo_guard(self):
+        import yahoo_client
+        yahoo_client.check_allowed("GET", "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=5m")
+        for m, u in (("POST", "https://query1.finance.yahoo.com/v8/finance/chart/SPY"),
+                     ("GET", "https://query1.finance.yahoo.com/v7/finance/quote?symbols=SPY"),
+                     ("GET", "https://query1.finance.yahoo.com/v8/finance/chart/../../v1/x"),
+                     ("GET", "https://evil.example.com/v8/finance/chart/SPY")):
+            with self.assertRaises(yahoo_client.YahooViolation, msg=u):
+                yahoo_client.check_allowed(m, u)
+
+    def test_yahoo_parsing(self):
+        t0 = 1795098600
+        class Fake:
+            def chart(self, sym, interval, rng):
+                self.last = sym
+                return {"meta": {"regularMarketPrice": 735.0},
+                        "timestamp": [t0, t0 + 300, t0 + 450, t0 + 600],
+                        "indicators": {"quote": [{"open": [1, 2, 9, None], "high": [2, 3, 9, 4],
+                                                  "low": [0.5, 1.5, 9, 3], "close": [1.5, 2.5, 9, 3.5],
+                                                  "volume": [10, 20, 1, 5]}]}}
+        fake = Fake()
+        f = YahooFeed(client=fake)
+        bars = f.bars("SPY", 5)
+        self.assertEqual([b.close for b in bars], [1.5, 2.5])       # gap and off-grid point dropped
+        f.bars("$VIX", 5)
+        self.assertEqual(fake.last, "^VIX")
+        self.assertEqual(f.quotes(["SPY"])["SPY"].last, 735.0)
+
+    def test_model_price_tracks_real_option(self):
+        """Model price vs the real 734P prices on 2026-11-19: mean error under $0.40/share."""
+        t = load_trade(ROOT / "trades" / "replay_spy_734p_2026-11-19.json")
+        data = ROOT / "data" / "spy_2026-11-19.json"
+        real, base = ReplayFeed(t, data), ReplayFeed(t, data)
+        m = ModelOptionFeed(base, t, entered_at=t.entry_time(base.clock.now().astimezone(base.clock.now().tzinfo).date()))
+        sym, errs = t.contract.schwab_symbol, []
+        while not base.finished():
+            q = m.quotes([sym])[sym]
+            self.assertTrue(q.model)
+            errs.append(abs(q.mark - real.quotes([sym])[sym].mark))
+            base.clock.sleep(300)
+            real.clock.sleep(300)
+        self.assertLess(sum(errs) / len(errs), 0.40)
 
 
 if __name__ == "__main__":

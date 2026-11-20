@@ -10,5 +10,6 @@
   "stop": 737.50,
   "t1": 723.15,
   "timeframe": "5m",
+  "entered_at": "10:12",
   "notes": "Replay of 2026-11-19: 0DTE put on the break of 735.44, single target 723.15. Stop 737.50 assumed (red line above entry). Premium estimated from the 10:10 candle."
 }

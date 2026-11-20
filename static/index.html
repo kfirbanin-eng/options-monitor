@@ -181,7 +181,8 @@ function render(s) {
   const p = s.position, o = s.option || {};
   $("position").innerHTML = [
     ["Underlying", `${esc(t.ticker)} ${num(s.underlying)}`],
-    ["Option mark", `${num(o.mark)} (bid ${num(o.bid)} / ask ${num(o.ask)})`],
+    ["Option mark", o.model ? `${num(o.mark)} <span class="muted">(model - Black-Scholes, not a market quote)</span>`
+                            : `${num(o.mark)} (bid ${num(o.bid)} / ask ${num(o.ask)})`],
     ["IV / delta / theta", `${o.iv ? (o.iv * 100).toFixed(1) + "%" : "n/a"} / ${num(o.delta)} / ${num(o.theta)}`],
     ["Premium paid", `${num(t.premium_paid)} (cost $${p ? Number(p.cost).toLocaleString() : "n/a"})`],
     ["Value", p ? "$" + p.value.toLocaleString(undefined, {maximumFractionDigits: 0}) : "n/a"],

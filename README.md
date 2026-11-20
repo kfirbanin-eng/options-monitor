@@ -45,6 +45,21 @@ python monitor.py trades/paper_spy_call.json --feed schwab
 python monitor.py trades/my_trade.json --feed schwab
 ```
 
+## No broker keys? Yahoo + model option price
+
+```bash
+python monitor.py trades/my_trade.json --feed yahoo
+```
+
+The underlying, SPY/QQQ/IWM/DIA and VIX come from Yahoo Finance (free, no account). The option's price
+is **calculated**, not quoted: IV is backed out of `premium_paid` at your `entry` price at `entered_at`
+(add `"entered_at": "HH:MM"` in ET to the trade file), then scaled with VIX, and the contract is priced
+with Black-Scholes. The page labels it "(model)".
+
+Checked against the real SPY 734P prices on 2026-11-19: mean error $0.21 per share (about $21 per contract),
+worst $1.01. Treat it as a good estimate, not a fill price - spreads on fast days are wider.
+Any feed can use the model with `--option-price model` (e.g. the replay, to compare).
+
 ## Replay a real day
 
 `--feed replay` plays back a recorded day bar by bar, as if it were live: same rules, alerts and page.
@@ -85,8 +100,9 @@ value *at* the level, which is what a resting limit order there would have fille
 | `report.py` | Opening report: value and P/L at each level, planned loss, max loss, R:R in $ |
 | `market.py` | Market panel: SPY/QQQ/IWM/DIA with the trade vs day/hour open, VIX direction |
 | `schwab_client.py` | Read-only Schwab client with the request guard (`GuardedSession`) |
+| `yahoo_client.py` | Read-only Yahoo Finance chart client (GET-only guard), used by `--feed yahoo` |
 | `auth.py` | One-time OAuth login that saves `tokens.json` |
-| `feeds.py` | `SchwabFeed` (live), `PaperFeed` (simulated session), `ReplayFeed` (recorded real day), behind one interface |
+| `feeds.py` | `SchwabFeed` (live), `PaperFeed` (simulated session), `ReplayFeed` (recorded real day), `YahooFeed`, and `ModelOptionFeed` (Black-Scholes option price), behind one interface |
 | `data/*.json` | Recorded days for replay mode |
 | `notifier.py` | Desktop notifications (plyer / osascript / notify-send) plus `logs/alerts.log` |
 | `journal.py` | Appends one CSV row per closed trade to `journal/journal.csv` |

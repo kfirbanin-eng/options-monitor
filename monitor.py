@@ -4,6 +4,7 @@ Usage
   python monitor.py trades/paper_spy_call.json --feed paper          # simulated session (no keys)
   python monitor.py trades/paper_spy_call.json --feed paper --speed 0 --no-web --auto-exit
   python monitor.py trades/my_trade.json --feed schwab               # live Schwab data
+  python monitor.py trades/my_trade.json --feed yahoo                # live Yahoo underlying, modelled option price
   python monitor.py trades/replay_spy_734p_2026-11-19.json --feed replay --data data/spy_2026-11-19.json
   python monitor.py trades/my_trade.json --log-exit 7.85             # write journal row by hand
 
@@ -23,7 +24,7 @@ from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 import config
-from feeds import PaperFeed, ReplayFeed, SchwabFeed
+from feeds import ModelOptionFeed, PaperFeed, ReplayFeed, SchwabFeed, YahooFeed
 from journal import write_exit_row
 from market import market_panel
 from notifier import Notifier
@@ -332,23 +333,37 @@ class Monitor:
 
 
 # ---------------------------------------------------------------------------
-def build_feed(kind: str, trade, speed: float, seed: int, data: str | None = None):
+def build_feed(kind: str, trade, speed: float, seed: int, data: str | None = None, option_price: str | None = None):
     if kind == "paper":
-        return PaperFeed(trade, seed=seed, speed=speed)
-    if kind == "replay":
+        feed = PaperFeed(trade, seed=seed, speed=speed)
+    elif kind == "replay":
         if not data:
             raise SystemExit("--feed replay needs --data <file>, e.g. --data data/spy_2026-11-19.json")
-        return ReplayFeed(trade, data, speed=speed)
-    from schwab_client import SchwabClient
-    client = SchwabClient(config.SCHWAB_APP_KEY, config.SCHWAB_APP_SECRET, config.TOKEN_FILE,
-                          config.SCHWAB_CALLBACK_URL)
-    return SchwabFeed(client)
+        feed = ReplayFeed(trade, data, speed=speed)
+    elif kind == "yahoo":
+        feed = YahooFeed()
+    else:
+        feed = None
+    if feed is None:
+        from schwab_client import SchwabClient
+        client = SchwabClient(config.SCHWAB_APP_KEY, config.SCHWAB_APP_SECRET, config.TOKEN_FILE,
+                              config.SCHWAB_CALLBACK_URL)
+        feed = SchwabFeed(client)
+    option_price = option_price or ("model" if kind == "yahoo" else "feed")
+    if option_price == "model":
+        today = feed.clock.now().astimezone(config.ET).date()
+        feed = ModelOptionFeed(feed, trade, entered_at=trade.entry_time(today), iv=trade.iv)
+        if feed.entered_at is None:
+            print('  Tip: add "entered_at": "HH:MM" (ET) to the trade file so the model IV uses your real entry time.')
+    return feed
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Alert-only options trade monitor (read-only).")
     ap.add_argument("trade", help="trade JSON file")
-    ap.add_argument("--feed", choices=["schwab", "paper", "replay"], default="schwab")
+    ap.add_argument("--feed", choices=["schwab", "yahoo", "paper", "replay"], default="schwab")
+    ap.add_argument("--option-price", choices=["feed", "model"],
+                    help="model = Black-Scholes from your entry premium (default for yahoo); feed = market quote")
     ap.add_argument("--data", help="replay: recorded day file (see data/)")
     ap.add_argument("--speed", type=float, default=60, help="paper/replay: simulated seconds per real second (0 = max)")
     ap.add_argument("--seed", type=int, default=7, help="paper: random seed for the simulated path")
@@ -378,7 +393,7 @@ def main(argv=None):
         print(f"Journal row written to {config.JOURNAL_FILE}: P/L ${row['pnl_usd']:,.2f}")
         return
 
-    feed = build_feed(args.feed, trade, args.speed, args.seed, args.data)
+    feed = build_feed(args.feed, trade, args.speed, args.seed, args.data, args.option_price)
     mon = Monitor(trade, feed, Notifier(desktop=not args.no_desktop, log_path=config.ALERT_LOG),
                   auto_exit=args.auto_exit, ignore_hours=args.ignore_hours, fresh=args.fresh)
     if not args.no_web:

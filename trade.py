@@ -15,6 +15,8 @@ A trade file is JSON, e.g. trades/paper_spy_call.json:
   "t1": 602.00,
   "t2": 605.50,                     optional - leave out for a single target (T1 is final)
   "timeframe": "5m",                1m | 5m
+  "entered_at": "10:12",            optional: entry time (ET, today) - used for the model option price
+  "iv": 40,                         optional: starting IV % for the model price (else backed out of premium_paid)
   "notes": "..."
 }
 """
@@ -75,6 +77,8 @@ class Trade:
     paper: bool = False
     id: str = ""
     notes: str = ""
+    entered_at: str = ""
+    iv: float | None = None
     contract: Contract = field(init=False)
 
     def __post_init__(self):
@@ -94,6 +98,19 @@ class Trade:
     @property
     def tf_minutes(self) -> int:
         return int(self.timeframe.rstrip("m"))
+
+    def entry_time(self, today) -> "datetime | None":
+        """entered_at as an aware datetime: 'HH:MM' (ET, on `today`) or a full ISO timestamp."""
+        from datetime import datetime, time as dtime
+        from config import ET
+        v = self.entered_at.strip()
+        if not v:
+            return None
+        if len(v) <= 5 and ":" in v:
+            hh, mm = v.split(":")
+            return datetime.combine(today, dtime(int(hh), int(mm)), tzinfo=ET)
+        dt = datetime.fromisoformat(v)
+        return dt if dt.tzinfo else dt.replace(tzinfo=ET)
 
     @property
     def multiplier(self) -> int:
@@ -139,4 +156,6 @@ def load_trade(path: str | Path) -> Trade:
         paper=bool(d.get("paper", False)),
         id=d.get("id") or path.stem,
         notes=d.get("notes", ""),
+        entered_at=str(d.get("entered_at", "") or ""),
+        iv=float(d["iv"]) if d.get("iv") not in (None, "") else None,
     )

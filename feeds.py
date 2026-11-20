@@ -49,6 +49,7 @@ class Quote:
     delta: float | None = None
     theta: float | None = None    # $ per share per day
     gamma: float | None = None
+    model: bool = False           # True = calculated (Black-Scholes), not a market quote
 
 
 class LiveClock:
@@ -344,3 +345,134 @@ class ReplayFeed:
 
     def finished(self) -> bool:
         return self.clock.now() >= self.end
+
+
+# ---------------------------------------------------------------------------
+class YahooFeed:
+    """Live underlying + market-panel data from Yahoo Finance (free, no keys).
+
+    Has no option prices: use it wrapped in ModelOptionFeed (monitor.py does this).
+    Yahoo symbols: $VIX -> ^VIX; everything else as-is.
+    """
+    live = True
+    label = "Yahoo Finance (live underlying)"
+
+    def __init__(self, client=None):
+        from yahoo_client import YahooClient
+        self.client = client or YahooClient()
+        self.clock = LiveClock()
+
+    @staticmethod
+    def _sym(symbol: str) -> str:
+        return "^" + symbol[1:] if symbol.startswith("$") else symbol
+
+    @staticmethod
+    def _parse(result: dict, minutes: int) -> list[Bar]:
+        ts = result.get("timestamp") or []
+        q = (result.get("indicators", {}).get("quote") or [{}])[0]
+        out = []
+        for i, t in enumerate(ts):
+            o, h, lo, c = (q.get(k, [None] * len(ts))[i] for k in ("open", "high", "low", "close"))
+            if None in (o, h, lo, c) or t % (minutes * 60):   # skip gaps and the odd "live" point
+                continue
+            out.append(Bar(datetime.fromtimestamp(t, timezone.utc), o, h, lo, c,
+                           (q.get("volume") or [0] * len(ts))[i] or 0, minutes))
+        return out
+
+    def bars(self, symbol: str, minutes: int, days: int = 3) -> list[Bar]:
+        rng = "5d" if days > 1 else "1d"
+        return self._parse(self.client.chart(self._sym(symbol), f"{minutes}m", rng), minutes)
+
+    def quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        out = {}
+        for sym in symbols:
+            res = self.client.chart(self._sym(sym), "1m", "1d")
+            meta = res.get("meta", {})
+            day = self._parse(res, 1)
+            last = _num(meta.get("regularMarketPrice")) or (day[-1].close if day else None)
+            out[sym] = Quote(sym, last=last, open=day[0].open if day else None, mark=last)
+        return out
+
+    def finished(self) -> bool:
+        return False
+
+
+class ModelOptionFeed:
+    """Wraps any feed and replaces the option quote with a Black-Scholes price.
+
+    IV is backed out of what you paid: premium_paid at the entry price at entered_at.
+    It is then scaled by VIX now / VIX at entry, because option IV tends to move with
+    the VIX (on 2026-11-19 VIX went 22.9 -> 28 while SPY fell). Set "iv" in the trade
+    file to override the starting IV.
+    """
+
+    def __init__(self, base, trade, entered_at: datetime | None = None, iv: float | None = None,
+                 vix_scaling: bool = True):
+        self.base, self.trade = base, trade
+        self.clock, self.live = base.clock, base.live
+        self.label = getattr(base, "label", "feed") + " + model option price"
+        self.entered_at = entered_at
+        self.iv0 = (iv / 100 if iv and iv > 3 else iv) or None
+        self.vix_scaling = vix_scaling
+        self.vix0: float | None = None
+
+    def bars(self, symbol, minutes, days=3):
+        return self.base.bars(symbol, minutes, days)
+
+    def finished(self):
+        return self.base.finished()
+
+    def _start(self):
+        from options_math import implied_vol
+        t, c = self.trade, self.trade.contract
+        if self.entered_at is None:
+            self.entered_at = self.clock.now()
+        if self.iv0 is None:
+            T0 = years_to_expiry(c.expiry, self.entered_at)
+            self.iv0 = implied_vol(t.premium_paid, t.entry, c.strike, T0, config.RISK_FREE_RATE, c.right)
+            if self.iv0 is None:
+                self.iv0 = 0.30
+                print("  (premium paid is at/below intrinsic at entry - using IV 30%; set \"iv\" in the trade file)")
+        if self.vix_scaling and self.vix0 is None:
+            try:
+                vb = [b for b in self.base.bars(config.VIX_SYMBOL, 5) if b.end <= self.entered_at + timedelta(minutes=5)]
+                self.vix0 = vb[-1].close if vb else None
+            except Exception:
+                self.vix0 = None
+        print(f"  Model option price: IV at entry {self.iv0 * 100:.1f}%"
+              + (f", VIX at entry {self.vix0:.2f} (IV scales with VIX)" if self.vix0 else ""))
+
+    def quotes(self, symbols):
+        t, c = self.trade, self.trade.contract
+        opt = c.schwab_symbol
+        need = [s for s in symbols if s != opt]
+        if opt in symbols:
+            if t.ticker not in need:
+                need.append(t.ticker)
+            if self.vix_scaling and config.VIX_SYMBOL not in need:
+                need.append(config.VIX_SYMBOL)
+        q = self.base.quotes(need)
+        if opt in symbols:
+            if self.iv0 is None:
+                self._start()
+            q[opt] = self._model(q[t.ticker].last, q.get(config.VIX_SYMBOL))
+        return {s: q[s] for s in symbols}
+
+    def current_iv(self, vix_quote) -> float:
+        iv = self.iv0
+        if self.vix_scaling and self.vix0 and vix_quote and vix_quote.last:
+            iv = self.iv0 * vix_quote.last / self.vix0
+        return iv
+
+    def _model(self, S, vix_quote) -> Quote:
+        c = self.trade.contract
+        if S is None:
+            return Quote(c.schwab_symbol, model=True)
+        if self.vix_scaling and self.vix0 is None and vix_quote and vix_quote.last:
+            self.vix0 = vix_quote.last
+        iv = self.current_iv(vix_quote)
+        T = years_to_expiry(c.expiry, self.clock.now())
+        mark = bs_price(S, c.strike, T, iv, config.RISK_FREE_RATE, c.right)
+        g = bs_greeks(S, c.strike, max(T, 1e-6), iv, config.RISK_FREE_RATE, c.right)
+        return Quote(c.schwab_symbol, last=round(mark, 2), mark=round(mark, 2), iv=iv,
+                     delta=g["delta"], theta=g["theta"], gamma=g["gamma"], model=True)
