@@ -141,7 +141,7 @@ class Trade:
 
 def load_trade(path: str | Path) -> Trade:
     path = Path(path)
-    d = json.loads(path.read_text())
+    d = json.loads(path.read_text(encoding="utf-8-sig"))  # tolerate Notepad BOM
     return Trade(
         ticker=d["ticker"],
         contract_raw=d["contract"],
