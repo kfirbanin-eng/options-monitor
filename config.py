@@ -47,6 +47,19 @@ WEB_PORT = int(os.getenv("MONITOR_PORT", "8765"))
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 
+# Mindset reminder, sent 1 minute before every 15-minute candle closes (:14, :29, :44, :59 ET)
+REMINDER_TITLE = "15m candle closes in 1 minute"
+REMINDER_TEXT = ("What do you know to be true?\n"
+                 "Check your chart.\n"
+                 "Deep breath - do you need to step away?")
+
+
+def reminder_due(now_et) -> bool:
+    """True during the minute before a 15-minute candle closes (regular session only)."""
+    t = now_et.hour * 60 + now_et.minute
+    return now_et.weekday() < 5 and 9 * 60 + 30 <= t < 16 * 60 and now_et.minute % 15 == 14
+
+
 # Output locations
 STATE_DIR = ROOT / "state"
 JOURNAL_FILE = ROOT / "journal" / "journal.csv"

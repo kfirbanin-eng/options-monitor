@@ -60,10 +60,11 @@ class Monitor:
     def __init__(self, trade, feed, notifier: Notifier, *, state_dir=config.STATE_DIR,
                  journal_path=config.JOURNAL_FILE, report_dir=config.REPORT_DIR,
                  poll_sec: int | None = None, auto_exit=False, ignore_hours=False, fresh=False,
-                 stop_when_done=False, heartbeat_min: int = 0):
+                 stop_when_done=False, heartbeat_min: int = 0, reminders: bool = False):
         self.trade, self.feed, self.notifier = trade, feed, notifier
         self.stop_when_done, self.heartbeat_min = stop_when_done, heartbeat_min
         self.last_heartbeat: datetime | None = None
+        self.reminders, self.last_reminder = reminders, None
         self.seen_open = False
         self.clock = feed.clock
         self.journal_path, self.report_dir = Path(journal_path), Path(report_dir)
@@ -141,6 +142,17 @@ class Monitor:
                            f"option {self.opt.mark:.2f}  stop {self.state['trail_stop']:.2f}{mkt}",
                            priority="low", tags=TAGS.get(st, "chart_with_upwards_trend"))
 
+    def reminder(self, now: datetime):
+        """Mindset check 1 minute before each 15m candle closes - once per quarter hour."""
+        et = now.astimezone(config.ET)
+        if not self.reminders or not config.reminder_due(et):
+            return
+        key = et.strftime("%Y-%m-%d %H:%M")
+        if key == self.last_reminder:
+            return
+        self.last_reminder = key
+        self.notifier.push(config.REMINDER_TITLE, config.REMINDER_TEXT, priority="default", tags="hourglass")
+
     def finish(self, now: datetime, reason: str):
         """Stop monitoring and send a final phone summary."""
         if self.done:
@@ -175,6 +187,7 @@ class Monitor:
             try:
                 self.tick(now)
                 self.heartbeat(now)
+                self.reminder(now)
             except ReadOnlyViolation:
                 raise
             except Exception as e:  # a bad poll must never kill the monitor
@@ -430,6 +443,8 @@ def main(argv=None):
     ap.add_argument("--fresh", action="store_true", help="live: ignore saved state (resets trailing stop!)")
     ap.add_argument("--stop-when-done", action="store_true",
                     help="exit (with a phone summary) when stop/final target is hit or the market closes")
+    ap.add_argument("--reminders", action="store_true",
+                    help="mindset reminder 1 minute before every 15m candle closes (phone + console)")
     ap.add_argument("--heartbeat-min", type=int, default=0,
                     help="send a quiet P/L update to the phone every N minutes (needs NTFY_TOPIC)")
     ap.add_argument("--log-exit", type=float, metavar="PRICE", help="write journal row at this option price and quit")
@@ -458,7 +473,8 @@ def main(argv=None):
     if notifier.ntfy_topic:
         print("  Phone push notifications: on (ntfy)")
     mon = Monitor(trade, feed, notifier, auto_exit=args.auto_exit, ignore_hours=args.ignore_hours,
-                  fresh=args.fresh, stop_when_done=args.stop_when_done, heartbeat_min=args.heartbeat_min)
+                  fresh=args.fresh, stop_when_done=args.stop_when_done, heartbeat_min=args.heartbeat_min,
+                  reminders=args.reminders)
     if not args.no_web:
         from web import start_web
         start_web(mon, config.WEB_HOST, args.port)

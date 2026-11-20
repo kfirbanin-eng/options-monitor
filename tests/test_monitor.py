@@ -363,5 +363,40 @@ class PhonePush(unittest.TestCase):
         Notifier(desktop=False, ntfy_topic="x", http=Boom()).notify("t", "m")
 
 
+class Reminders(unittest.TestCase):
+    def test_reminder_minutes(self):
+        import config
+        from datetime import datetime as dt
+        due = lambda h, m: config.reminder_due(dt(2026, 11, 20, h, m, tzinfo=config.ET))  # a Friday
+        self.assertTrue(all(due(10, m) for m in (14, 29, 44, 59)))
+        self.assertFalse(any(due(10, m) for m in (0, 13, 15, 30)))
+        self.assertFalse(due(9, 14))                       # before the open
+        self.assertTrue(due(15, 59))
+        self.assertFalse(config.reminder_due(dt(2026, 11, 21, 10, 14, tzinfo=config.ET)))  # Saturday
+
+    def test_next_slot(self):
+        import config
+        from datetime import datetime as dt
+        sys.path.insert(0, str(ROOT / "tools"))
+        from reminders import next_slot
+        self.assertEqual(next_slot(dt(2026, 11, 20, 10, 14, 30, tzinfo=config.ET)).strftime("%H:%M"), "10:29")
+        self.assertEqual(next_slot(dt(2026, 11, 20, 9, 0, tzinfo=config.ET)).strftime("%H:%M"), "09:44")
+
+    def test_replay_sends_reminders_once_per_quarter(self):
+        trade = load_trade(ROOT / "trades" / "replay_spy_734p_2026-11-19.json")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            n = Notifier(desktop=False)
+            pushed = []
+            n.push = lambda title, msg, **k: pushed.append((mon.clock.now(), title, msg))
+            mon = Monitor(trade, ReplayFeed(trade, ROOT / "data" / "spy_2026-11-19.json"), n, state_dir=d,
+                          journal_path=d / "j.csv", report_dir=d, stop_when_done=True, reminders=True)
+            mon.run()
+        import config
+        times = [t.astimezone(config.ET).strftime("%H:%M") for t, title, _ in pushed if title == config.REMINDER_TITLE]
+        self.assertEqual(times, ["10:29", "10:44", "10:59", "11:14", "11:29", "11:44", "11:59"])
+        self.assertIn("What do you know to be true?", pushed[1][2])
+
+
 if __name__ == "__main__":
     unittest.main()

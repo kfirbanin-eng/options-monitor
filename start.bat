@@ -8,5 +8,5 @@ if not exist trades\live.json (
   exit /b 1
 )
 start "" cmd /c "timeout /t 4 >nul & start http://127.0.0.1:8765"
-%PY% monitor.py trades\live.json --feed yahoo %*
+%PY% monitor.py trades\live.json --feed yahoo --reminders %*
 pause

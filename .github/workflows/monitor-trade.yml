@@ -83,7 +83,7 @@ jobs:
         run: |
           python tools/yahoo_check.py || true
           python monitor.py trades/replay_spy_734p_2026-11-19.json --feed replay --data data/spy_2026-11-19.json \
-            --speed 60 --no-web --no-desktop --stop-when-done --heartbeat-min 30
+            --speed 60 --no-web --no-desktop --stop-when-done --heartbeat-min 30 --reminders
 
       - name: Create trade from the form
         if: ${{ !inputs.demo }}
@@ -103,4 +103,4 @@ jobs:
         if: ${{ !inputs.demo }}
         run: >
           python monitor.py trades/phone.json --feed yahoo --no-web --no-desktop
-          --stop-when-done --heartbeat-min 15
+          --stop-when-done --heartbeat-min 15 --reminders
