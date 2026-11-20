@@ -63,27 +63,49 @@ class Notifier:
             self._ntfy(title, message, priority, tags)
 
     def speak(self, text: str) -> None:
-        """Say text out loud on this computer, without blocking. Windows: built-in voice
-        (System.Speech); macOS: say; Linux: spd-say / espeak if installed. Silent on failure."""
+        """Say text out loud on this computer, without blocking. Silent on failure.
+
+        VOICE_STYLE=calm (default): slow, soft, a long pause after each line.
+        VOICE_STYLE=normal: the plain system voice at normal speed.
+        Windows: built-in voices (System.Speech); macOS: say; Linux: espeak / spd-say if installed.
+        """
         if not self.desktop:
             return
+        import os
+        from xml.sax.saxutils import escape
+        calm = os.getenv("VOICE_STYLE", "calm").lower() != "normal"
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        flat = " ".join(lines)
         try:
             system = platform.system()
             if system == "Windows":
-                safe = text.replace("'", "''").replace("\n", " ")
-                cmd = ("Add-Type -AssemblyName System.Speech; "
-                       "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = -1; "
-                       f"$s.Speak('{safe}')")
+                body = '<break time="1200ms"/>'.join(escape(ln) for ln in lines)
+                ssml = ('<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">'
+                        f'<prosody rate="x-slow" volume="soft">{body}</prosody></speak>')
+                ps_ssml, ps_flat = ssml.replace("'", "''"), flat.replace("'", "''")
+                if calm:
+                    cmd = ("Add-Type -AssemblyName System.Speech; "
+                           "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                           "$s.Rate = -3; $s.Volume = 80; "
+                           f"try {{ $s.SpeakSsml('{ps_ssml}') }} catch {{ $s.Speak('{ps_flat}') }}")
+                else:
+                    cmd = ("Add-Type -AssemblyName System.Speech; "
+                           "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                           f"$s.Speak('{ps_flat}')")
                 subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             elif system == "Darwin":
-                subprocess.Popen(["say", text.replace("\n", " ")])
+                args = ["say", "-r", "130"] if calm else ["say"]
+                subprocess.Popen(args + [" [[slnc 1200]] ".join(lines)])
             else:
-                tool = shutil.which("spd-say") or shutil.which("espeak-ng") or shutil.which("espeak")
-                if tool:
-                    subprocess.Popen([tool, text.replace("\n", " ")], stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+                espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+                if espeak:
+                    args = [espeak, "-s", "115", "-a", "80", "-g", "12"] if calm else [espeak]
+                    subprocess.Popen(args + [flat], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif shutil.which("spd-say"):
+                    args = ["spd-say", "-r", "-50", "-i", "-20"] if calm else ["spd-say"]
+                    subprocess.Popen(args + [flat], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             print(f"(speech failed: {e})")
 

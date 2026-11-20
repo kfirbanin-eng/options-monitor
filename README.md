@@ -22,7 +22,8 @@ It stops by itself when the stop or final target is hit or the market closes; or
 Tick **demo** once to test the setup any time: it replays 2026-11-19 in about 2 minutes.
 
 Mindset reminder, 1 minute before every 15-minute candle closes (:14, :29, :44, :59 ET):
-"What do you know to be true? / Check your chart. / Deep breath - do you need to step away?"
+"First of all, focus. / Deep breath. / What do you know to be true? / Check your chart. /
+Deep breath - do you need to step away?" (spoken on the PC in a calm, slow voice with pauses)
 It is on during every monitored trade (phone workflow and `start.bat`). For the whole session without
 a trade, run **Trading reminders** from the Actions tab before the open (stops at 16:00 ET).
 

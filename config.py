@@ -51,7 +51,9 @@ NTFY_REMINDER_TOPIC = os.getenv("NTFY_REMINDER_TOPIC", "") or NTFY_TOPIC
 
 # Mindset reminder, sent 1 minute before every 15-minute candle closes (:14, :29, :44, :59 ET)
 REMINDER_TITLE = "15m candle closes in 1 minute"
-REMINDER_TEXT = ("What do you know to be true?\n"
+REMINDER_TEXT = ("First of all, focus.\n"
+                 "Deep breath.\n"
+                 "What do you know to be true?\n"
                  "Check your chart.\n"
                  "Deep breath - do you need to step away?")
 
