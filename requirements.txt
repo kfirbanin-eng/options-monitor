@@ -1,4 +1,6 @@
 requests>=2.31
 python-dotenv>=1.0
+# Time-zone data (America/New_York). Required on Windows, which has no system tz database.
+tzdata>=2024.1
 # Optional, recommended on Windows for desktop notifications:
 # plyer>=2.1
