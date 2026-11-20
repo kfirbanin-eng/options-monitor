@@ -11,7 +11,7 @@ LEVELS = [("entry", "Entry"), ("stop", "Stop"), ("t1", "T1"), ("t2", "T2")]
 
 def level_estimates(trade, S_now: float, opt_quote, now: datetime, trail_stop: float | None = None) -> dict:
     """{key: {price, option, pnl}} for entry/stop/T1/T2 (+ trailing stop if tightened)."""
-    levels = {k: getattr(trade, k) for k, _ in LEVELS}
+    levels = {k: getattr(trade, k) for k, _ in LEVELS if not (k == "t2" and trade.single_target)}
     if trail_stop is not None and trail_stop != trade.stop:
         levels["trail"] = trail_stop
     out = {}
@@ -26,7 +26,8 @@ def opening_report(trade, S_now: float, opt_quote, now: datetime) -> tuple[dict,
     est = level_estimates(trade, S_now, opt_quote, now)
     cost = trade.premium_paid * trade.multiplier
     planned_loss = est["stop"]["pnl"]
-    gain1, gain2 = est["t1"]["pnl"], est["t2"]["pnl"]
+    gain1 = est["t1"]["pnl"]
+    gain2 = est["t2"]["pnl"] if "t2" in est else gain1
     risk = abs(planned_loss) if planned_loss < 0 else None
     dte = years_to_expiry(trade.contract.expiry, now) * 365
     data = {
@@ -53,6 +54,8 @@ def opening_report(trade, S_now: float, opt_quote, now: datetime) -> tuple[dict,
         f" {'Level':<8}{'Underlying':>12}{'Est. option':>14}{'Position P/L':>16}",
     ]
     for k, label in LEVELS:
+        if k not in est:
+            continue
         e = est[k]
         lines.append(f" {label:<8}{e['price']:>12.2f}{e['option']:>14.2f}{sgn(e['pnl']):>16}")
     lines += [
@@ -60,8 +63,11 @@ def opening_report(trade, S_now: float, opt_quote, now: datetime) -> tuple[dict,
         f" Planned loss at stop       {sgn(planned_loss)}",
         f" Absolute max loss (premium) {sgn(-cost)}",
         f" R:R to T1  {f(data['rr_t1'])} : 1   ({sgn(gain1)} vs {sgn(planned_loss)})",
-        f" R:R to T2  {f(data['rr_t2'])} : 1   ({sgn(gain2)} vs {sgn(planned_loss)})",
-        f" vs max loss: T1 {data['rr_t1_vs_max']:.2f} : 1, T2 {data['rr_t2_vs_max']:.2f} : 1",
+    ]
+    if not trade.single_target:
+        lines.append(f" R:R to T2  {f(data['rr_t2'])} : 1   ({sgn(gain2)} vs {sgn(planned_loss)})")
+    lines += [
+        f" vs max loss: T1 {data['rr_t1_vs_max']:.2f} : 1" + ("" if trade.single_target else f", T2 {data['rr_t2_vs_max']:.2f} : 1"),
         "",
         " Estimates reprice the contract at each level with current IV and time",
         " (as if hit now). Later hits will be worth less by theta; IV changes move them too.",

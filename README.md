@@ -45,6 +45,20 @@ python monitor.py trades/paper_spy_call.json --feed schwab
 python monitor.py trades/my_trade.json --feed schwab
 ```
 
+## Replay a real day
+
+`--feed replay` plays back a recorded day bar by bar, as if it were live: same rules, alerts and page.
+Only candles that had closed at that moment are visible. Included: SPY on 2026-11-19 with the 0DTE 734 put
+(real 5-minute prices from TradingView), and a trade file for a put entered on the break of 735.44, target 723.15.
+
+```bash
+python monitor.py trades/replay_spy_734p_2026-11-19.json --feed replay --data data/spy_2026-11-19.json
+```
+
+Open http://127.0.0.1:8765. Add `--speed 0 --no-web --auto-exit` for an instant console run.
+With 5-minute data, level hits are seen at the candle close; the alert also shows the estimated option
+value *at* the level, which is what a resting limit order there would have filled near.
+
 ## Rules (call; put is the mirror)
 
 | Status | Condition | Suggestion |
@@ -72,12 +86,13 @@ python monitor.py trades/my_trade.json --feed schwab
 | `market.py` | Market panel: SPY/QQQ/IWM/DIA with the trade vs day/hour open, VIX direction |
 | `schwab_client.py` | Read-only Schwab client with the request guard (`GuardedSession`) |
 | `auth.py` | One-time OAuth login that saves `tokens.json` |
-| `feeds.py` | `SchwabFeed` (live) and `PaperFeed` (simulated session), behind one interface |
+| `feeds.py` | `SchwabFeed` (live), `PaperFeed` (simulated session), `ReplayFeed` (recorded real day), behind one interface |
+| `data/*.json` | Recorded days for replay mode |
 | `notifier.py` | Desktop notifications (plyer / osascript / notify-send) plus `logs/alerts.log` |
 | `journal.py` | Appends one CSV row per closed trade to `journal/journal.csv` |
 | `web.py` + `static/index.html` | Local page on 127.0.0.1: chart, EMAs, PSAR dots, labelled level lines, panels, exit form |
 | `config.py` | All settings; reads `.env` |
-| `trades/*.json` | Trade files: two paper trades and `TEMPLATE.json` |
+| `trades/*.json` | Trade files: two paper trades, the 2026-11-19 SPY replay, and `TEMPLATE.json`. `t2` is optional (single target) |
 | `tests/test_monitor.py` | Read-only guard, indicators, rules incl. put mirror, tighten-only, full paper sessions |
 
 Runtime output: `state/<id>.json` (trailing stop and history, resumed on restart so the stop never resets),

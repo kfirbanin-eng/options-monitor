@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import schwab_client
-from feeds import Bar, PaperFeed
+from feeds import Bar, PaperFeed, ReplayFeed
 from indicators import ema, psar
 from monitor import Monitor
 from notifier import Notifier
@@ -258,6 +258,32 @@ class PaperSession(unittest.TestCase):
             self.assertTrue(all(("->" in a["title"]) or (" hit @ " in a["title"]) for a in alerts))
             snap = mon.get_snapshot()
             self.assertTrue(snap["chart"]["candles"] and snap["chart"]["psar"] and snap["market"])
+
+
+class Replay(unittest.TestCase):
+    def test_recorded_day_spy_734p(self):
+        """Real 2026-11-19 SPY bars: the 723.15 target is hit and journaled at the level, not at the later mark."""
+        trade = load_trade(ROOT / "trades" / "replay_spy_734p_2026-11-19.json")
+        self.assertTrue(trade.single_target)
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            feed = ReplayFeed(trade, ROOT / "data" / "spy_2026-11-19.json")
+            mon = Monitor(trade, feed, Notifier(desktop=False), state_dir=d, journal_path=d / "j.csv",
+                          report_dir=d, auto_exit=True)
+            mon.run()
+            hit = mon.state["levels_hit"]
+            self.assertEqual(hit["t1"]["time"], "12:05")
+            self.assertIn("trail", hit)
+            self.assertNotIn("stop", hit)
+            self.assertAlmostEqual(mon.state["exit"]["exit_premium"], 10.85, places=2)
+            seq = [h["to"] for h in mon.state["status_history"]]
+            self.assertEqual(seq[:4], [RED, YELLOW, GREEN, YELLOW])
+
+    def test_no_future_bars_visible(self):
+        trade = load_trade(ROOT / "trades" / "replay_spy_734p_2026-11-19.json")
+        feed = ReplayFeed(trade, ROOT / "data" / "spy_2026-11-19.json")
+        now = feed.clock.now()
+        self.assertTrue(all(b.end <= now for b in feed.bars("SPY", 5)))
 
 
 if __name__ == "__main__":

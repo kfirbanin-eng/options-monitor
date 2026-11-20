@@ -253,3 +253,94 @@ class PaperFeed:
 
     def finished(self) -> bool:
         return self.clock.now() >= self.session_close
+
+
+# ---------------------------------------------------------------------------
+class ReplayFeed:
+    """Plays back a recorded real day (data/*.json) as if it were live.
+
+    File layout: {"interval_min": 5, "start": ISO time to start the clock,
+                  "option": {"symbol": "SPY 2026-11-19 734 P", "t0": unix, "o":[], "h":[], "l":[], "c":[]},
+                  "symbols": {"SPY": [{"t0":..., "o":[], "h":[], "l":[], "c":[]}, ...], "QQQ": [...], ...}}
+    Each segment is consecutive bars from t0 every interval_min. h/l may be omitted (then max/min of o,c).
+    Only bars that have fully closed by the replay clock are visible - no peeking at the future.
+    The option's IV and greeks are backed out of its recorded price with Black-Scholes.
+    """
+    live = False
+
+    def __init__(self, trade, path, speed: float = 0):
+        import json
+        from pathlib import Path
+        from trade import parse_contract
+
+        d = json.loads(Path(path).read_text())
+        self.trade = trade
+        self.interval = int(d.get("interval_min", 5))
+        if trade.tf_minutes != self.interval:
+            raise ValueError(f"Replay data is {self.interval}m bars; set the trade timeframe to '{self.interval}m'")
+        self.series = {sym: [b for seg in segs for b in self._mk(seg)] for sym, segs in d["symbols"].items()}
+        if trade.ticker not in self.series:
+            raise ValueError(f"Replay file has no bars for {trade.ticker}")
+        opt = d["option"]
+        if parse_contract(opt["symbol"]) != trade.contract:
+            raise ValueError(f"Replay file is for {opt['symbol']}, trade file is for {trade.contract.display}")
+        self.opt_bars = self._mk(opt)
+        under = self.series[trade.ticker]
+        start = datetime.fromisoformat(d["start"]).astimezone(timezone.utc) if d.get("start") else under[-1].start
+        self.clock = SimClock(start, speed)
+        self.end = under[-1].end
+        self.label = f"Replay {under[-1].start.astimezone(config.ET):%Y-%m-%d} (recorded data)"
+
+    def _mk(self, seg) -> list[Bar]:
+        o, c = seg["o"], seg["c"]
+        h = seg.get("h") or [max(a, b) for a, b in zip(o, c)]
+        lo = seg.get("l") or [min(a, b) for a, b in zip(o, c)]
+        t0 = datetime.fromtimestamp(seg["t0"], timezone.utc)
+        return [Bar(t0 + timedelta(minutes=self.interval * i), o[i], h[i], lo[i], c[i], 0, self.interval)
+                for i in range(len(c))]
+
+    def _closed(self, bars: list[Bar]) -> list[Bar]:
+        now = self.clock.now()
+        return [b for b in bars if b.end <= now]
+
+    def bars(self, symbol: str, minutes: int, days: int = 3) -> list[Bar]:
+        if minutes != self.interval:
+            raise ValueError(f"replay has {self.interval}m bars only")
+        return self._closed(self.series.get(symbol, []))
+
+    def _day_open(self, symbol: str) -> float | None:
+        now_et = self.clock.now().astimezone(config.ET)
+        session = datetime.combine(now_et.date(), time(9, 30), tzinfo=config.ET)
+        return next((b.open for b in self.series.get(symbol, []) if b.start >= session), None)
+
+    def quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        out = {}
+        for sym in symbols:
+            if sym == self.trade.contract.schwab_symbol:
+                out[sym] = self._option_quote()
+                continue
+            vis = self._closed(self.series.get(sym, []))
+            last = vis[-1].close if vis else None
+            out[sym] = Quote(sym, last=last, open=self._day_open(sym), mark=last)
+        return out
+
+    def _option_quote(self) -> Quote:
+        from options_math import implied_vol
+        t, c = self.trade, self.trade.contract
+        vis = self._closed(self.opt_bars)
+        under = self._closed(self.series[t.ticker])
+        if not vis or not under:
+            return Quote(c.schwab_symbol)
+        mark, S, now = vis[-1].close, under[-1].close, self.clock.now()
+        T = years_to_expiry(c.expiry, now)
+        iv = implied_vol(mark, S, c.strike, T, config.RISK_FREE_RATE, c.right)
+        if iv:
+            g = bs_greeks(S, c.strike, T, iv, config.RISK_FREE_RATE, c.right)
+        else:   # price at/below intrinsic: treat as pure stock exposure
+            itm = (S > c.strike) if c.right == "C" else (S < c.strike)
+            g = {"delta": (1.0 if c.right == "C" else -1.0) if itm else 0.0, "theta": 0.0, "gamma": 0.0}
+        return Quote(c.schwab_symbol, last=mark, mark=mark, iv=iv, delta=g["delta"], theta=g["theta"],
+                     gamma=g["gamma"])
+
+    def finished(self) -> bool:
+        return self.clock.now() >= self.end

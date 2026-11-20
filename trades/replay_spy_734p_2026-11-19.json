@@ -1,0 +1,14 @@
+{
+  "id": "replay-spy-734p-2026-11-19",
+  "paper": true,
+  "ticker": "SPY",
+  "contract": "SPY 2026-11-19 734 P",
+  "direction": "put",
+  "contracts": 1,
+  "premium_paid": 2.34,
+  "entry": 735.44,
+  "stop": 737.50,
+  "t1": 723.15,
+  "timeframe": "5m",
+  "notes": "Replay of 2026-11-19: 0DTE put on the break of 735.44, single target 723.15. Stop 737.50 assumed (red line above entry). Premium estimated from the 10:10 candle."
+}

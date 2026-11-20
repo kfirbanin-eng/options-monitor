@@ -4,6 +4,7 @@ Usage
   python monitor.py trades/paper_spy_call.json --feed paper          # simulated session (no keys)
   python monitor.py trades/paper_spy_call.json --feed paper --speed 0 --no-web --auto-exit
   python monitor.py trades/my_trade.json --feed schwab               # live Schwab data
+  python monitor.py trades/replay_spy_734p_2026-11-19.json --feed replay --data data/spy_2026-11-19.json
   python monitor.py trades/my_trade.json --log-exit 7.85             # write journal row by hand
 
 Loop (live): every QUOTE_POLL_SEC fetch underlying + option quote -> live P/L and level
@@ -22,10 +23,11 @@ from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 import config
-from feeds import PaperFeed, SchwabFeed
+from feeds import PaperFeed, ReplayFeed, SchwabFeed
 from journal import write_exit_row
 from market import market_panel
 from notifier import Notifier
+from options_math import estimate_option_value
 from report import level_estimates, opening_report
 from rules import GREEN, RED, WAIT, YELLOW, check_levels, compute_indicators, evaluate, tighten
 from schwab_client import ReadOnlyViolation
@@ -214,9 +216,21 @@ class Monitor:
                 continue
             level = self.state["trail_stop"] if key == "trail" else getattr(self.trade, key)
             self.state["levels_hit"][key] = {"time": et_str(now, "%H:%M"), "level": level, "price": price}
-            opt_txt = f"option ~{self.opt.mark:.2f}, P/L {self.pnl_text()}" if self.opt and self.opt.mark else ""
-            if key in ENDING_LEVELS:
-                self.state["sticky_red"] = f"{LEVEL_NAMES[key]} {level:.2f} hit"
+            name = "Target" if key == "t1" and self.trade.single_target else LEVEL_NAMES[key]
+            at_level = None
+            opt_txt = ""
+            if self.opt and self.opt.mark:
+                # what the contract is worth AT the level (a resting limit there would fill near this),
+                # vs the mark now - they differ when price ran through the level between polls
+                at_level = estimate_option_value(self.trade.contract, level, price, self.opt.mark, self.opt.iv,
+                                                 self.opt.delta, now, config.RISK_FREE_RATE)
+                lvl_pnl = (at_level - self.trade.premium_paid) * self.trade.multiplier
+                opt_txt = (f"option at {level:.2f} ~{at_level:.2f} ({'+' if lvl_pnl >= 0 else '-'}${abs(lvl_pnl):,.0f}); "
+                           f"mark now {self.opt.mark:.2f}, P/L {self.pnl_text()}")
+            self.state["levels_hit"][key]["option_at_level"] = at_level
+            ending = key in ENDING_LEVELS or (key == "t1" and self.trade.single_target)
+            if ending:
+                self.state["sticky_red"] = f"{name} {level:.2f} hit"
                 advice = "Plan says exit (alert only - nothing is sent to the broker)."
                 if self.state.get("status") != RED:
                     self.set_status(RED, None, now, notify=False)
@@ -227,12 +241,12 @@ class Monitor:
                 advice, status_txt = "Suggested trailing stop broken - consider exiting or reducing.", ""
             else:
                 advice, status_txt = "Consider taking partial profits and tightening the stop.", ""
-            self.notifier.notify(f"{self.trade.contract.display}: {LEVEL_NAMES[key]} hit @ {level:.2f}",
+            self.notifier.notify(f"{self.trade.contract.display}: {name} hit @ {level:.2f}",
                                  f"{self.trade.ticker} {price:.2f}; {opt_txt}.{status_txt} {advice}",
                                  now.astimezone(config.ET))
             self.save()
-            if key in ENDING_LEVELS and self.auto_exit and not self.feed.live:
-                self.log_exit(None, f"paper auto-exit: {LEVEL_NAMES[key]} hit", now)
+            if ending and self.auto_exit and not self.feed.live:
+                self.log_exit(at_level, f"paper auto-exit: {name} {level:.2f} hit (filled at level)", now)
 
     def pnl_text(self) -> str:
         if not self.opt or self.opt.mark is None:
@@ -292,7 +306,8 @@ class Monitor:
                    "pnl_pct": 100 * (o.mark / t.premium_paid - 1), "mfe": self.state["mfe"], "mae": self.state["mae"]}
         ev = self.ev
         snap = {
-            "mode": "READ-ONLY - alerts only, no orders", "feed": "Schwab live" if self.feed.live else "Paper simulation",
+            "mode": "READ-ONLY - alerts only, no orders",
+            "feed": getattr(self.feed, "label", "Schwab live" if self.feed.live else "Paper simulation"),
             "now": et_str(now, "%Y-%m-%d %H:%M:%S ET"), "note": self.note, "errors": self.errors,
             "trade": {"id": t.id, "paper": t.paper, "ticker": t.ticker, "contract": t.contract.display,
                       "direction": t.direction, "contracts": t.contracts, "premium_paid": t.premium_paid,
@@ -317,9 +332,13 @@ class Monitor:
 
 
 # ---------------------------------------------------------------------------
-def build_feed(kind: str, trade, speed: float, seed: int):
+def build_feed(kind: str, trade, speed: float, seed: int, data: str | None = None):
     if kind == "paper":
         return PaperFeed(trade, seed=seed, speed=speed)
+    if kind == "replay":
+        if not data:
+            raise SystemExit("--feed replay needs --data <file>, e.g. --data data/spy_2026-11-19.json")
+        return ReplayFeed(trade, data, speed=speed)
     from schwab_client import SchwabClient
     client = SchwabClient(config.SCHWAB_APP_KEY, config.SCHWAB_APP_SECRET, config.TOKEN_FILE,
                           config.SCHWAB_CALLBACK_URL)
@@ -329,13 +348,14 @@ def build_feed(kind: str, trade, speed: float, seed: int):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Alert-only options trade monitor (read-only).")
     ap.add_argument("trade", help="trade JSON file")
-    ap.add_argument("--feed", choices=["schwab", "paper"], default="schwab")
-    ap.add_argument("--speed", type=float, default=60, help="paper: simulated seconds per real second (0 = max)")
+    ap.add_argument("--feed", choices=["schwab", "paper", "replay"], default="schwab")
+    ap.add_argument("--data", help="replay: recorded day file (see data/)")
+    ap.add_argument("--speed", type=float, default=60, help="paper/replay: simulated seconds per real second (0 = max)")
     ap.add_argument("--seed", type=int, default=7, help="paper: random seed for the simulated path")
     ap.add_argument("--port", type=int, default=config.WEB_PORT)
     ap.add_argument("--no-web", action="store_true")
     ap.add_argument("--no-desktop", action="store_true", help="console/log alerts only")
-    ap.add_argument("--auto-exit", action="store_true", help="paper only: journal exit when stop/T2 hit or session ends")
+    ap.add_argument("--auto-exit", action="store_true", help="paper/replay: journal exit when stop/final target hit or session ends")
     ap.add_argument("--ignore-hours", action="store_true", help="live: evaluate outside 09:30-16:00 ET")
     ap.add_argument("--fresh", action="store_true", help="live: ignore saved state (resets trailing stop!)")
     ap.add_argument("--log-exit", type=float, metavar="PRICE", help="write journal row at this option price and quit")
@@ -358,7 +378,7 @@ def main(argv=None):
         print(f"Journal row written to {config.JOURNAL_FILE}: P/L ${row['pnl_usd']:,.2f}")
         return
 
-    feed = build_feed(args.feed, trade, args.speed, args.seed)
+    feed = build_feed(args.feed, trade, args.speed, args.seed, args.data)
     mon = Monitor(trade, feed, Notifier(desktop=not args.no_desktop, log_path=config.ALERT_LOG),
                   auto_exit=args.auto_exit, ignore_hours=args.ignore_hours, fresh=args.fresh)
     if not args.no_web:

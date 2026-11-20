@@ -79,7 +79,7 @@ def check_levels(trade, trail_stop: float, hi: float, lo: float) -> list[str]:
         hits.append("trail")
     if s * (favour - trade.t1) >= 0:
         hits.append("t1")
-    if s * (favour - trade.t2) >= 0:
+    if not trade.single_target and s * (favour - trade.t2) >= 0:
         hits.append("t2")
     return hits
 

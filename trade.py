@@ -13,7 +13,7 @@ A trade file is JSON, e.g. trades/paper_spy_call.json:
   "entry": 598.50,                  underlying prices from here down
   "stop": 595.80,
   "t1": 602.00,
-  "t2": 605.50,
+  "t2": 605.50,                     optional - leave out for a single target (T1 is final)
   "timeframe": "5m",                1m | 5m
   "notes": "..."
 }
@@ -70,7 +70,7 @@ class Trade:
     entry: float
     stop: float
     t1: float
-    t2: float
+    t2: float | None = None
     timeframe: str = "5m"
     paper: bool = False
     id: str = ""
@@ -81,6 +81,9 @@ class Trade:
         self.ticker = self.ticker.upper().strip()
         self.direction = self.direction.lower().strip()
         self.contract = parse_contract(self.contract_raw)
+        self.single_target = self.t2 is None or self.t2 == self.t1
+        if self.single_target:
+            self.t2 = self.t1
         self.validate()
 
     @property
@@ -113,7 +116,7 @@ class Trade:
             errs.append(f"stop must be {'below' if s > 0 else 'above'} entry for a {self.direction}")
         if not s * (self.t1 - self.entry) > 0:
             errs.append(f"t1 must be {'above' if s > 0 else 'below'} entry for a {self.direction}")
-        if not s * (self.t2 - self.t1) > 0:
+        if not self.single_target and not s * (self.t2 - self.t1) > 0:
             errs.append(f"t2 must be beyond t1 for a {self.direction}")
         if errs:
             raise ValueError("Invalid trade file:\n  - " + "\n  - ".join(errs))
@@ -131,7 +134,7 @@ def load_trade(path: str | Path) -> Trade:
         entry=float(d["entry"]),
         stop=float(d["stop"]),
         t1=float(d["t1"]),
-        t2=float(d["t2"]),
+        t2=float(d["t2"]) if d.get("t2") not in (None, "") else None,
         timeframe=d.get("timeframe", "5m"),
         paper=bool(d.get("paper", False)),
         id=d.get("id") or path.stem,
