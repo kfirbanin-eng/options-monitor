@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Options Monitor</title>
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"
+        integrity="sha384-JZigAjwiaZtkUbA44CWkPaT3iBb/mU5pO6QOANp+OqHd4q+1+7MG1kzp2OOP9ZfP" crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #667085; --line: #e3e6ea;
@@ -179,10 +180,10 @@ function render(s) {
 
   const p = s.position, o = s.option || {};
   $("position").innerHTML = [
-    ["Underlying", `${t.ticker} ${num(s.underlying)}`],
+    ["Underlying", `${esc(t.ticker)} ${num(s.underlying)}`],
     ["Option mark", `${num(o.mark)} (bid ${num(o.bid)} / ask ${num(o.ask)})`],
     ["IV / delta / theta", `${o.iv ? (o.iv * 100).toFixed(1) + "%" : "n/a"} / ${num(o.delta)} / ${num(o.theta)}`],
-    ["Premium paid", `${num(t.premium_paid)} (cost $${p ? p.cost.toLocaleString() : "n/a"})`],
+    ["Premium paid", `${num(t.premium_paid)} (cost $${p ? Number(p.cost).toLocaleString() : "n/a"})`],
     ["Value", p ? "$" + p.value.toLocaleString(undefined, {maximumFractionDigits: 0}) : "n/a"],
     ["P/L", p ? `<span class="${cls(p.pnl)}">${money(p.pnl)} (${num(p.pnl_pct, 1)}%)</span>` : "n/a"],
     ["Best / worst", p ? `${money(p.mfe)} / ${money(p.mae)}` : "n/a"],
@@ -194,23 +195,23 @@ function render(s) {
   $("levels").innerHTML = "<tr><th>Level</th><th>Underlying</th><th>Est. option</th><th>Position P/L</th><th>Hit</th></tr>" +
     ["entry", "stop", "trail", "t1", "t2"].filter(k => (s.levels || {})[k]).map(k => {
       const l = s.levels[k];
-      return `<tr><td>${names[k]}</td><td>${num(l.price)}</td><td>${num(l.option)}</td><td class="${cls(l.pnl)}">${money(l.pnl)}</td><td>${hit[k] ? hit[k].time : ""}</td></tr>`;
+      return `<tr><td>${names[k]}</td><td>${num(l.price)}</td><td>${num(l.option)}</td><td class="${cls(l.pnl)}">${money(l.pnl)}</td><td>${hit[k] ? esc(hit[k].time) : ""}</td></tr>`;
     }).join("");
 
   const m = s.market;
   if (m) {
     const arrow = v => v == null ? "n/a" : `<span class="${cls(v)}">${v >= 0 ? "+" : ""}${v.toFixed(2)}%</span>`;
     const v = m.vix || {};
-    $("market").innerHTML = `<p><b>${m.with_day}/${m.of}</b> with the trade vs day open, <b>${m.with_hour}/${m.of}</b> vs hour open</p>
+    $("market").innerHTML = `<p><b>${num(m.with_day,0)}/${num(m.of,0)}</b> with the trade vs day open, <b>${num(m.with_hour,0)}/${num(m.of,0)}</b> vs hour open</p>
       <table><tr><th>Symbol</th><th>Last</th><th>vs day open</th><th>vs hour open</th></tr>` +
-      m.rows.map(r => `<tr><td>${r.symbol}</td><td>${num(r.last)}</td><td>${arrow(r.vs_day_pct)} ${r.with_day ? "✓" : ""}</td><td>${arrow(r.vs_hour_pct)} ${r.with_hour ? "✓" : ""}</td></tr>`).join("") +
-      `</table><p>VIX ${num(v.last)} - <b>${v.direction || "n/a"}</b> ${v.supportive ? "(supports the trade)" : v.direction ? "(against the trade)" : ""}</p>
-      <p class="muted">Updated ${m.updated} ET, every 15 min</p>`;
+      m.rows.map(r => `<tr><td>${esc(r.symbol)}</td><td>${num(r.last)}</td><td>${arrow(r.vs_day_pct)} ${r.with_day ? "✓" : ""}</td><td>${arrow(r.vs_hour_pct)} ${r.with_hour ? "✓" : ""}</td></tr>`).join("") +
+      `</table><p>VIX ${num(v.last)} - <b>${esc(v.direction || "n/a")}</b> ${v.supportive ? "(supports the trade)" : v.direction ? "(against the trade)" : ""}</p>
+      <p class="muted">Updated ${esc(m.updated)} ET, every 15 min</p>`;
   }
   const al = (s.alerts || []).slice().reverse();
   $("alerts").innerHTML = al.length ? al.map(a => `<div class="alert"><b>${esc(a.time)} ${esc(a.title)}</b><span>${esc(a.message)}</span></div>`).join("") : "None yet";
   $("history").innerHTML = "<tr><th>Time</th><th>Change</th><th>Why</th></tr>" + (s.history || []).slice().reverse()
-    .map(h => `<tr><td>${h.time}</td><td>${h.from || "-"} → ${h.to}</td><td style="text-align:left">${esc(h.reason)}</td></tr>`).join("");
+    .map(h => `<tr><td>${esc(h.time)}</td><td>${esc(h.from || "-")} → ${esc(h.to)}</td><td style="text-align:left">${esc(h.reason)}</td></tr>`).join("");
   $("opening").textContent = s.opening_text || "";
   if (s.exit) $("exitDone").innerHTML = `<p><b>Exit journaled:</b> ${num(s.exit.exit_premium)} → ${money(s.exit.pnl_usd)} (${esc(s.exit.exit_reason)})</p>`;
   drawChart(s);

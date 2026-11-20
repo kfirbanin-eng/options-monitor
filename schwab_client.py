@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import requests
 
@@ -33,14 +34,24 @@ class ReadOnlyViolation(RuntimeError):
 class GuardedSession(requests.Session):
     def request(self, method, url, *args, **kwargs):
         check_allowed(method, url)
+        # Redirects are followed inside send(), not request(), so they would skip the guard.
+        kwargs["allow_redirects"] = False
         return super().request(method, url, *args, **kwargs)
+
+    def send(self, request, **kwargs):
+        check_allowed(request.method, request.url)   # check the final, normalised URL too
+        return super().send(request, **kwargs)
 
 
 def check_allowed(method: str, url: str) -> None:
-    method = method.upper()
+    method = (method or "").upper()
     parts = urlsplit(url)
-    if parts.scheme != "https" or parts.hostname != API_HOST:
-        raise ReadOnlyViolation(f"Blocked {method} {url}: only {API_HOST} is allowed")
+    if parts.scheme != "https" or parts.hostname != API_HOST or parts.port not in (None, 443) \
+            or parts.username or parts.password:
+        raise ReadOnlyViolation(f"Blocked {method} {parts.scheme}://{parts.hostname}: only {API_HOST} is allowed")
+    decoded = unquote(parts.path)
+    if ".." in decoded.split("/") or "\\" in decoded or "//" in decoded or decoded != parts.path.replace("%20", " "):
+        raise ReadOnlyViolation(f"Blocked {method}: path traversal / encoded path not allowed")
     if method == "GET" and parts.path.startswith(MARKETDATA_PREFIX):
         return
     if method == "POST" and f"{parts.scheme}://{parts.hostname}{parts.path}" == TOKEN_URL:
@@ -67,14 +78,16 @@ class SchwabClient:
         if "refresh_token_obtained_at" not in tok:
             tok["refresh_token_obtained_at"] = (self.tokens or {}).get("refresh_token_obtained_at", time.time())
         self.tokens = tok
-        self.token_file.write_text(json.dumps(tok, indent=2))
+        fd = os.open(self.token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never world-readable
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(tok, indent=2))
         try:
             self.token_file.chmod(0o600)
         except OSError:
             pass
 
     def authorize_url(self) -> str:
-        return f"{AUTHORIZE_URL}?client_id={self.app_key}&redirect_uri={self.callback_url}"
+        return f"{AUTHORIZE_URL}?client_id={quote(self.app_key)}&redirect_uri={quote(self.callback_url, safe='')}"
 
     def exchange_code(self, code: str) -> None:
         r = self.http.post(TOKEN_URL, headers={"Authorization": f"Basic {self._basic()}",

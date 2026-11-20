@@ -5,3 +5,9 @@ journal/
 logs/
 reports/
 __pycache__/
+.env.*
+!.env.example
+tokens*.json
+*.zip
+*.pem
+*.key

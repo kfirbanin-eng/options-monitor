@@ -75,6 +75,76 @@ class ReadOnly(unittest.TestCase):
                 self.assertNotIn(word, src, f"{py.name} mentions {word}")
 
 
+    def test_path_traversal_and_tricks_blocked(self):
+        for u in ("https://api.schwabapi.com/marketdata/v1/../../trader/v1/accounts/x/orders",
+                  "https://api.schwabapi.com/marketdata/v1/%2e%2e/%2e%2e/trader/v1/accounts",
+                  "https://api.schwabapi.com/marketdata/v1/%2F..%2Ftrader",
+                  "https://api.schwabapi.com:8443/marketdata/v1/quotes",
+                  "https://user:pw@api.schwabapi.com/marketdata/v1/quotes",
+                  "http://api.schwabapi.com/marketdata/v1/quotes"):
+            with self.assertRaises(ReadOnlyViolation, msg=u):
+                check_allowed("GET", u)
+
+    def test_redirects_disabled_and_send_guarded(self):
+        import requests
+        s = schwab_client.GuardedSession()
+        req = requests.Request("GET", "https://api.schwabapi.com/trader/v1/accounts").prepare()
+        with self.assertRaises(ReadOnlyViolation):
+            s.send(req)
+
+
+class WebHardening(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import socket
+        from web import start_web
+
+        class Fake:
+            exits = []
+            def get_snapshot(self): return {"ok": True}
+            def request_exit(self, price, reason): self.exits.append((price, reason))
+        with socket.socket() as so:
+            so.bind(("127.0.0.1", 0)); cls.port = so.getsockname()[1]
+        cls.mon = Fake()
+        cls.srv = start_web(cls.mon, "127.0.0.1", cls.port)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def req(self, method="GET", path="/api/state", headers=None, body=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        h = {"Host": f"127.0.0.1:{self.port}"}
+        h.update(headers or {})
+        c.request(method, path, body=body, headers=h)
+        r = c.getresponse()
+        return r.status, r.read(), r
+
+    def test_normal_access(self):
+        st, _, r = self.req()
+        self.assertEqual(st, 200)
+        self.assertIn("default-src 'none'", r.getheader("Content-Security-Policy"))
+
+    def test_dns_rebinding_blocked(self):
+        self.assertEqual(self.req(headers={"Host": "evil.example.com"})[0], 403)
+        self.assertEqual(self.req(headers={"Origin": "https://evil.example.com"})[0], 403)
+
+    def test_exit_requires_header_json_and_small_body(self):
+        ok = {"X-Monitor": "1", "Content-Type": "application/json"}
+        self.assertEqual(self.req("POST", "/api/exit", {"Content-Type": "application/json"}, b"{}")[0], 403)
+        self.assertEqual(self.req("POST", "/api/exit", {"X-Monitor": "1", "Content-Type": "text/plain"}, b"{}")[0], 403)
+        self.assertEqual(self.req("POST", "/api/exit", ok, b"x" * 5000)[0], 413)
+        self.assertEqual(self.req("POST", "/api/exit", ok, b'{"price": "nan"}')[0], 400)
+        self.assertEqual(self.req("POST", "/api/exit", ok, b'{"price": 3.1, "reason": "t"}')[0], 200)
+        self.assertEqual(self.mon.exits[-1], (3.1, "t"))
+
+    def test_refuses_non_local_bind(self):
+        from web import start_web
+        with self.assertRaises(ValueError):
+            start_web(self.mon, "0.0.0.0", 0)
+
+
 class Indicators(unittest.TestCase):
     def test_ema(self):
         e = ema([1, 2, 3, 4, 5, 6], 3)
