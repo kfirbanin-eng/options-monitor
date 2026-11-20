@@ -59,6 +59,7 @@ jobs:
     timeout-minutes: 420          # a full session plus margin
     env:
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      NTFY_REMINDER_TOPIC: ${{ secrets.NTFY_REMINDER_TOPIC }}   # optional: reminders on their own topic/sound
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4

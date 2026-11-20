@@ -26,6 +26,11 @@ Mindset reminder, 1 minute before every 15-minute candle closes (:14, :29, :44, 
 It is on during every monitored trade (phone workflow and `start.bat`). For the whole session without
 a trade, run **Trading reminders** from the Actions tab before the open (stops at 16:00 ET).
 
+Spoken: on the PC the reminder is also said out loud (Windows built-in voice) whenever the monitor runs
+with `--reminders` (`start.bat`), or all session with `reminders.bat`. On the phone, put the reminders on
+their own topic (`NTFY_REMINDER_TOPIC` secret), subscribe to it in ntfy, and set a recording of your
+own voice as that subscription's notification sound.
+
 Prices come from Yahoo Finance and the option price is the Black-Scholes model (see below).
 The same phone alerts work from the PC: put `NTFY_TOPIC=...` in `.env`.
 

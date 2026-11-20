@@ -151,7 +151,9 @@ class Monitor:
         if key == self.last_reminder:
             return
         self.last_reminder = key
-        self.notifier.push(config.REMINDER_TITLE, config.REMINDER_TEXT, priority="default", tags="hourglass")
+        self.notifier.push(config.REMINDER_TITLE, config.REMINDER_TEXT, priority="default", tags="hourglass",
+                           topic=config.NTFY_REMINDER_TOPIC)
+        self.notifier.speak(config.REMINDER_TEXT)
 
     def finish(self, now: datetime, reason: str):
         """Stop monitoring and send a final phone summary."""

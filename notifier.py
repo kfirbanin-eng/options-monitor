@@ -47,11 +47,45 @@ class Notifier:
         except Exception as e:
             print(f"(phone push failed: {e})")
 
-    def push(self, title: str, message: str, priority: str = "default", tags: str = "") -> None:
+    def push(self, title: str, message: str, priority: str = "default", tags: str = "",
+             topic: str | None = None) -> None:
         """Informational phone message (start, periodic P/L, end of session). Not an alert:
-        no desktop popup and not counted in the alert list."""
+        no desktop popup and not counted in the alert list. `topic` overrides the default topic
+        (used for reminders, so the phone can give them their own sound)."""
         print(f"[phone] {title} | {message.splitlines()[0] if message else ''}", flush=True)
-        self._ntfy(title, message, priority, tags)
+        if topic and topic != self.ntfy_topic:
+            saved, self.ntfy_topic = self.ntfy_topic, topic
+            try:
+                self._ntfy(title, message, priority, tags)
+            finally:
+                self.ntfy_topic = saved
+        else:
+            self._ntfy(title, message, priority, tags)
+
+    def speak(self, text: str) -> None:
+        """Say text out loud on this computer, without blocking. Windows: built-in voice
+        (System.Speech); macOS: say; Linux: spd-say / espeak if installed. Silent on failure."""
+        if not self.desktop:
+            return
+        try:
+            system = platform.system()
+            if system == "Windows":
+                safe = text.replace("'", "''").replace("\n", " ")
+                cmd = ("Add-Type -AssemblyName System.Speech; "
+                       "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = -1; "
+                       f"$s.Speak('{safe}')")
+                subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            elif system == "Darwin":
+                subprocess.Popen(["say", text.replace("\n", " ")])
+            else:
+                tool = shutil.which("spd-say") or shutil.which("espeak-ng") or shutil.which("espeak")
+                if tool:
+                    subprocess.Popen([tool, text.replace("\n", " ")], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+        except Exception as e:
+            print(f"(speech failed: {e})")
 
     def notify(self, title: str, message: str, when: datetime | None = None, priority: str = "high",
                tags: str = "") -> None:

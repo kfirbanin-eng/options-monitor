@@ -46,6 +46,8 @@ WEB_PORT = int(os.getenv("MONITOR_PORT", "8765"))
 # Phone push notifications via ntfy (https://ntfy.sh) - optional
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
+# Optional separate topic for the 15-minute reminders, so the phone can play a recorded voice for them only
+NTFY_REMINDER_TOPIC = os.getenv("NTFY_REMINDER_TOPIC", "") or NTFY_TOPIC
 
 # Mindset reminder, sent 1 minute before every 15-minute candle closes (:14, :29, :44, :59 ET)
 REMINDER_TITLE = "15m candle closes in 1 minute"

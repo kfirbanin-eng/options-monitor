@@ -26,9 +26,10 @@ def next_slot(now_et: datetime) -> datetime:
 
 
 def main():
-    n = Notifier(desktop=False, ntfy_topic=config.NTFY_TOPIC, ntfy_server=config.NTFY_SERVER)
-    if not n.ntfy_topic:
-        raise SystemExit("Set NTFY_TOPIC first (GitHub secret, or .env on the PC).")
+    speak = "--speak" in sys.argv          # on a PC: also say it out loud
+    n = Notifier(desktop=speak, ntfy_topic=config.NTFY_TOPIC, ntfy_server=config.NTFY_SERVER)
+    if not n.ntfy_topic and not speak:
+        raise SystemExit("Set NTFY_TOPIC first (GitHub secret, or .env on the PC), or run with --speak.")
     now = datetime.now(config.ET)
     n.push("Reminders on", f"Every 15 minutes until 16:00 ET, 1 minute before the candle closes.\n"
                            f"First one at {next_slot(now):%H:%M} ET.", tags="hourglass")
@@ -42,7 +43,8 @@ def main():
             n.push("Reminders off", "Session over.", priority="low", tags="checkered_flag")
             return
         time.sleep(max(0.0, (slot - datetime.now(config.ET)).total_seconds()))
-        n.push(config.REMINDER_TITLE, config.REMINDER_TEXT, tags="hourglass")
+        n.push(config.REMINDER_TITLE, config.REMINDER_TEXT, tags="hourglass", topic=config.NTFY_REMINDER_TOPIC)
+        n.speak(config.REMINDER_TEXT)
         time.sleep(61)
 
 
