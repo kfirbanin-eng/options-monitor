@@ -5,6 +5,25 @@ on the underlying, and alerts you. **It never places, modifies or cancels orders
 order code, and its HTTP layer refuses every Schwab request except market-data GETs and the
 OAuth token refresh.
 
+## Phone (Android/iPhone): trade on the go, no computer
+
+GitHub runs the monitor; your phone gets the alerts. Free (GitHub Actions minutes).
+
+One-time setup:
+1. Install the **ntfy** app and subscribe to a long random topic name (it works like a password).
+2. In this repo on GitHub: Settings > Secrets and variables > Actions > New repository secret,
+   name `NTFY_TOPIC`, value = that topic.
+3. Keep the repo **private**: run logs show your trade details.
+
+Each trade: GitHub app > this repo > Actions > **Monitor trade** > Run workflow > fill in the form > Run.
+You get: a start message with value at stop/targets, alerts on status changes and level hits
+(RED and stop/target are urgent), a silent P/L update every 15 minutes, and an end summary.
+It stops by itself when the stop or final target is hit or the market closes; or cancel the run.
+Tick **demo** once to test the setup any time: it replays 2026-11-19 in about 2 minutes.
+
+Prices come from Yahoo Finance and the option price is the Black-Scholes model (see below).
+The same phone alerts work from the PC: put `NTFY_TOPIC=...` in `.env`.
+
 ## Windows: double-click setup
 
 1. Install Python from https://www.python.org/downloads/ and tick **Add python.exe to PATH**.

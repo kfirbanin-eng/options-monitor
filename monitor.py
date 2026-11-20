@@ -27,7 +27,7 @@ import config
 from feeds import ModelOptionFeed, PaperFeed, ReplayFeed, SchwabFeed, YahooFeed
 from journal import write_exit_row
 from market import market_panel
-from notifier import Notifier
+from notifier import TAGS, Notifier
 from options_math import estimate_option_value
 from report import level_estimates, opening_report
 from rules import GREEN, RED, WAIT, YELLOW, check_levels, compute_indicators, evaluate, tighten
@@ -40,6 +40,10 @@ ENDING_LEVELS = ("stop", "t2")   # plan over -> sticky RED. Trailing-stop hits a
 
 def et_str(dt: datetime, fmt="%Y-%m-%d %H:%M") -> str:
     return dt.astimezone(config.ET).strftime(fmt)
+
+
+def money(v: float) -> str:
+    return f"{'+' if v >= 0 else '-'}${abs(v):,.0f}"
 
 
 def market_open(now: datetime) -> bool:
@@ -55,8 +59,12 @@ def chart_time(dt: datetime) -> int:
 class Monitor:
     def __init__(self, trade, feed, notifier: Notifier, *, state_dir=config.STATE_DIR,
                  journal_path=config.JOURNAL_FILE, report_dir=config.REPORT_DIR,
-                 poll_sec: int | None = None, auto_exit=False, ignore_hours=False, fresh=False):
+                 poll_sec: int | None = None, auto_exit=False, ignore_hours=False, fresh=False,
+                 stop_when_done=False, heartbeat_min: int = 0):
         self.trade, self.feed, self.notifier = trade, feed, notifier
+        self.stop_when_done, self.heartbeat_min = stop_when_done, heartbeat_min
+        self.last_heartbeat: datetime | None = None
+        self.seen_open = False
         self.clock = feed.clock
         self.journal_path, self.report_dir = Path(journal_path), Path(report_dir)
         self.poll_sec = poll_sec or (config.QUOTE_POLL_SEC if feed.live else 60)
@@ -108,6 +116,44 @@ class Monitor:
             self.save()
         self.report_text = self.state["opening_text"]
         print(self.report_text)
+        o = self.state["opening"]
+        lv = o["levels"]
+        lines = [f"{self.trade.contracts} x {self.trade.contract.display} @ {self.trade.premium_paid:.2f} "
+                 f"(cost ${o['cost']:,.0f})"]
+        for k, label in (("stop", "Stop"), ("t1", "T1" if not self.trade.single_target else "Target"), ("t2", "T2")):
+            if k in lv:
+                lines.append(f"{label} {lv[k]['price']:.2f}: option ~{lv[k]['option']:.2f} ({money(lv[k]['pnl'])})")
+        lines.append(f"Max loss {money(o['max_loss'])}" + (f" | R:R {o['rr_t1']:.1f}:1" if o.get("rr_t1") else ""))
+        self.notifier.push(f"Monitoring started: {self.trade.contract.display}", "\n".join(lines),
+                           priority="default", tags="eyes")
+
+    def heartbeat(self, now: datetime):
+        """Quiet periodic phone update (no sound): status, P/L, stop."""
+        if not self.heartbeat_min or not self.opt or self.opt.mark is None:
+            return
+        if self.last_heartbeat and now - self.last_heartbeat < timedelta(minutes=self.heartbeat_min):
+            return
+        self.last_heartbeat = now
+        st = self.state.get("status") or WAIT
+        mkt = f"\nMarket: {self.market['summary']}" if self.market else ""
+        self.notifier.push(f"{st} | P/L {self.pnl_text()} | {self.trade.contract.display}",
+                           f"{et_str(now, '%H:%M')} ET  {self.trade.ticker} {self.under.last:.2f}  "
+                           f"option {self.opt.mark:.2f}  stop {self.state['trail_stop']:.2f}{mkt}",
+                           priority="low", tags=TAGS.get(st, "chart_with_upwards_trend"))
+
+    def finish(self, now: datetime, reason: str):
+        """Stop monitoring and send a final phone summary."""
+        if self.done:
+            return
+        self.done = True
+        hits = ", ".join(f"{k.upper()} {v['time']}" for k, v in self.state["levels_hit"].items()) or "none"
+        mark = f"{self.opt.mark:.2f}" if self.opt and self.opt.mark is not None else "n/a"
+        self.notifier.push(f"Monitoring ended: {self.trade.contract.display}",
+                           f"{reason}\nLast option {mark}, P/L {self.pnl_text()} "
+                           f"(best {money(self.state['mfe'])}, worst {money(self.state['mae'])})\n"
+                           f"Levels hit: {hits}\nStatus {self.state.get('status')}",
+                           priority="default", tags="checkered_flag")
+        self.save()
 
     def run(self, max_ticks: int | None = None):
         if not self.done:
@@ -116,14 +162,19 @@ class Monitor:
         while not self.done:
             now = self.clock.now()
             if self.feed.live and not self.ignore_hours and not market_open(now):
+                if self.stop_when_done and (self.seen_open or now.astimezone(config.ET).time() >= time(16, 0)):
+                    self.finish(now, "Market closed")
+                    break
                 self.note = f"Market closed ({et_str(now, '%a %H:%M ET')}) - waiting for 09:30 ET"
                 self.publish(now)
                 self.handle_exit_request(now)
                 self.clock.sleep(60)
                 continue
             self.note = ""
+            self.seen_open = True
             try:
                 self.tick(now)
+                self.heartbeat(now)
             except ReadOnlyViolation:
                 raise
             except Exception as e:  # a bad poll must never kill the monitor
@@ -132,10 +183,12 @@ class Monitor:
                 print("ERROR", msg)
                 traceback.print_exc()
             self.handle_exit_request(now)
+            if self.stop_when_done and self.state.get("sticky_red") and not self.done:
+                self.finish(now, self.state["sticky_red"])
             if not self.feed.live and self.feed.finished() and not self.done:
                 if self.auto_exit:
                     self.log_exit(None, "paper session end", now)
-                self.done = True
+                self.finish(now, "Session ended")
             self.publish(now)
             ticks += 1
             if max_ticks and ticks >= max_ticks:
@@ -209,7 +262,8 @@ class Monitor:
             self.notifier.notify(
                 f"{self.trade.contract.display}: {prev} -> {status}",
                 f"{ev.action if ev else ''}\n{reason}\nStop now {self.state['trail_stop']:.2f} | "
-                f"P/L {self.pnl_text()}{mkt}", now.astimezone(config.ET))
+                f"P/L {self.pnl_text()}{mkt}", now.astimezone(config.ET),
+                priority="urgent" if status == RED else "high", tags=TAGS.get(status, "bell"))
 
     def handle_hits(self, hits: list[str], price: float, now: datetime):
         for key in hits:
@@ -244,7 +298,8 @@ class Monitor:
                 advice, status_txt = "Consider taking partial profits and tightening the stop.", ""
             self.notifier.notify(f"{self.trade.contract.display}: {name} hit @ {level:.2f}",
                                  f"{self.trade.ticker} {price:.2f}; {opt_txt}.{status_txt} {advice}",
-                                 now.astimezone(config.ET))
+                                 now.astimezone(config.ET), priority="urgent" if ending else "high",
+                                 tags="dart" if key in ("t1", "t2") else "warning")
             self.save()
             if ending and self.auto_exit and not self.feed.live:
                 self.log_exit(at_level, f"paper auto-exit: {name} {level:.2f} hit (filled at level)", now)
@@ -373,6 +428,10 @@ def main(argv=None):
     ap.add_argument("--auto-exit", action="store_true", help="paper/replay: journal exit when stop/final target hit or session ends")
     ap.add_argument("--ignore-hours", action="store_true", help="live: evaluate outside 09:30-16:00 ET")
     ap.add_argument("--fresh", action="store_true", help="live: ignore saved state (resets trailing stop!)")
+    ap.add_argument("--stop-when-done", action="store_true",
+                    help="exit (with a phone summary) when stop/final target is hit or the market closes")
+    ap.add_argument("--heartbeat-min", type=int, default=0,
+                    help="send a quiet P/L update to the phone every N minutes (needs NTFY_TOPIC)")
     ap.add_argument("--log-exit", type=float, metavar="PRICE", help="write journal row at this option price and quit")
     ap.add_argument("--exit-underlying", type=float)
     ap.add_argument("--reason", default="manual exit")
@@ -394,8 +453,12 @@ def main(argv=None):
         return
 
     feed = build_feed(args.feed, trade, args.speed, args.seed, args.data, args.option_price)
-    mon = Monitor(trade, feed, Notifier(desktop=not args.no_desktop, log_path=config.ALERT_LOG),
-                  auto_exit=args.auto_exit, ignore_hours=args.ignore_hours, fresh=args.fresh)
+    notifier = Notifier(desktop=not args.no_desktop, log_path=config.ALERT_LOG,
+                        ntfy_topic=config.NTFY_TOPIC, ntfy_server=config.NTFY_SERVER)
+    if notifier.ntfy_topic:
+        print("  Phone push notifications: on (ntfy)")
+    mon = Monitor(trade, feed, notifier, auto_exit=args.auto_exit, ignore_hours=args.ignore_hours,
+                  fresh=args.fresh, stop_when_done=args.stop_when_done, heartbeat_min=args.heartbeat_min)
     if not args.no_web:
         from web import start_web
         start_web(mon, config.WEB_HOST, args.port)

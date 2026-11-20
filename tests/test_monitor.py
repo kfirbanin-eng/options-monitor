@@ -331,5 +331,37 @@ class YahooAndModel(unittest.TestCase):
         self.assertLess(sum(errs) / len(errs), 0.40)
 
 
+class PhonePush(unittest.TestCase):
+    def test_replay_with_phone_push_stops_when_done(self):
+        sent = []
+
+        class FakeHttp:
+            def post(self, url, data, timeout, headers):
+                sent.append((url, headers["Title"], headers["Priority"], data.decode()))
+                return type("R", (), {"status_code": 200})()
+
+        trade = load_trade(ROOT / "trades" / "replay_spy_734p_2026-11-19.json")
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            n = Notifier(desktop=False, ntfy_topic="t0pic", ntfy_server="https://ntfy.example", http=FakeHttp())
+            mon = Monitor(trade, ReplayFeed(trade, ROOT / "data" / "spy_2026-11-19.json"), n, state_dir=d,
+                          journal_path=d / "j.csv", report_dir=d, stop_when_done=True, heartbeat_min=30)
+            mon.run()
+        titles = [t for _, t, _, _ in sent]
+        self.assertTrue(all(u == "https://ntfy.example/t0pic" for u, _, _, _ in sent))
+        self.assertTrue(titles[0].startswith("Monitoring started"))
+        self.assertTrue(titles[-1].startswith("Monitoring ended"))
+        self.assertIn("Target hit @ 723.15", " ".join(titles))
+        self.assertEqual(mon.clock.now().astimezone(mon.clock.now().tzinfo).strftime("%H:%M"), "17:05")  # 12:05 ET
+        urgent = [t for _, t, p, _ in sent if p == "urgent"]
+        self.assertTrue(any("RED" in t for t in urgent) and any("Target" in t for t in urgent))
+
+    def test_push_failure_never_raises(self):
+        class Boom:
+            def post(self, *a, **k):
+                raise OSError("network down")
+        Notifier(desktop=False, ntfy_topic="x", http=Boom()).notify("t", "m")
+
+
 if __name__ == "__main__":
     unittest.main()

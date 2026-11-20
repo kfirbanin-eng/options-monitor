@@ -43,6 +43,10 @@ CANDLE_SETTLE_SEC = 5         # wait this long after a candle closes before fetc
 WEB_HOST = "127.0.0.1"
 WEB_PORT = int(os.getenv("MONITOR_PORT", "8765"))
 
+# Phone push notifications via ntfy (https://ntfy.sh) - optional
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
+
 # Output locations
 STATE_DIR = ROOT / "state"
 JOURNAL_FILE = ROOT / "journal" / "journal.csv"

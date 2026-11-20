@@ -1,0 +1,106 @@
+# Phone trading: start this from the GitHub app (Actions > Monitor trade > Run workflow),
+# fill in the trade, and get alerts in the ntfy app. Alert only - never places orders.
+name: Monitor trade
+
+on:
+  workflow_dispatch:
+    inputs:
+      contract:
+        description: "Contract, e.g. SPY 2026-11-20 734 P"
+        required: true
+        type: string
+      premium_paid:
+        description: "Price paid per share, e.g. 2.34"
+        required: true
+        type: string
+      contracts:
+        description: "Number of contracts"
+        required: true
+        default: "1"
+        type: string
+      entry:
+        description: "Entry (underlying price)"
+        required: true
+        type: string
+      stop:
+        description: "Stop (underlying price)"
+        required: true
+        type: string
+      target1:
+        description: "Target 1 (underlying price)"
+        required: true
+        type: string
+      target2:
+        description: "Target 2 (optional)"
+        required: false
+        type: string
+      entered_at:
+        description: "Entry time HH:MM New York time (blank = now)"
+        required: false
+        type: string
+      timeframe:
+        description: "Candle timeframe"
+        required: true
+        default: "5m"
+        type: choice
+        options: ["5m", "1m"]
+      demo:
+        description: "Test run: replay 2026-11-19 instead (ignores the fields above)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420          # a full session plus margin
+    env:
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Check phone notifications are set up
+        run: |
+          if [ -z "$NTFY_TOPIC" ]; then
+            echo "::error::Add the NTFY_TOPIC secret: repo Settings > Secrets and variables > Actions > New repository secret"
+            exit 1
+          fi
+
+      - name: Demo - check Yahoo and replay 2026-11-19
+        if: ${{ inputs.demo }}
+        run: |
+          python tools/yahoo_check.py || true
+          python monitor.py trades/replay_spy_734p_2026-11-19.json --feed replay --data data/spy_2026-11-19.json \
+            --speed 60 --no-web --no-desktop --stop-when-done --heartbeat-min 30
+
+      - name: Create trade from the form
+        if: ${{ !inputs.demo }}
+        env:                       # inputs go through env vars, never pasted into the script
+          CONTRACT: ${{ inputs.contract }}
+          PREMIUM: ${{ inputs.premium_paid }}
+          CONTRACTS: ${{ inputs.contracts }}
+          ENTRY: ${{ inputs.entry }}
+          STOP: ${{ inputs.stop }}
+          TARGET1: ${{ inputs.target1 }}
+          TARGET2: ${{ inputs.target2 }}
+          ENTERED_AT: ${{ inputs.entered_at }}
+          TIMEFRAME: ${{ inputs.timeframe }}
+        run: python tools/make_trade.py trades/phone.json
+
+      - name: Monitor (live Yahoo prices, model option price)
+        if: ${{ !inputs.demo }}
+        run: >
+          python monitor.py trades/phone.json --feed yahoo --no-web --no-desktop
+          --stop-when-done --heartbeat-min 15
