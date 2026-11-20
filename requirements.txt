@@ -1,0 +1,4 @@
+requests>=2.31
+python-dotenv>=1.0
+# Optional, recommended on Windows for desktop notifications:
+# plyer>=2.1

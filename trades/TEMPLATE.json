@@ -1,0 +1,15 @@
+{
+  "id": "spy-600c-2026-11-20",
+  "paper": false,
+  "ticker": "SPY",
+  "contract": "SPY 2026-12-18 600 C",
+  "direction": "call",
+  "contracts": 1,
+  "premium_paid": 0.00,
+  "entry": 0.00,
+  "stop": 0.00,
+  "t1": 0.00,
+  "t2": 0.00,
+  "timeframe": "5m",
+  "notes": ""
+}

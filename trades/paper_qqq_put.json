@@ -1,0 +1,15 @@
+{
+  "id": "paper-qqq-510p",
+  "paper": true,
+  "ticker": "QQQ",
+  "contract": "QQQ   261218P00510000",
+  "direction": "put",
+  "contracts": 3,
+  "premium_paid": 8.50,
+  "entry": 512.00,
+  "stop": 515.00,
+  "t1": 508.00,
+  "t2": 504.00,
+  "timeframe": "1m",
+  "notes": "Paper test of the put mirror, OCC symbol format, 1m timeframe"
+}

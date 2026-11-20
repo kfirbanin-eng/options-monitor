@@ -1,0 +1,101 @@
+# Options Trade Monitor (alert-only, read-only)
+
+Watches one option trade, scores it GREEN / YELLOW / RED from EMA 8/13/21 and Parabolic SAR
+on the underlying, and alerts you. **It never places, modifies or cancels orders.** It has no
+order code, and its HTTP layer refuses every Schwab request except market-data GETs and the
+OAuth token refresh.
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+```
+
+1. Paper test (no keys, simulated session, about 6 minutes at speed 60). Open http://127.0.0.1:8765
+
+```bash
+python monitor.py trades/paper_spy_call.json --feed paper
+```
+
+2. Same thing instantly, console only, journal row written at the end:
+
+```bash
+python monitor.py trades/paper_spy_call.json --feed paper --speed 0 --no-web --auto-exit
+```
+
+3. Run the tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+4. Live data. Copy `.env.example` to `.env`, then authorize once (repeat every 7 days):
+
+```bash
+python auth.py
+```
+
+5. Monitor a paper trade on live Schwab data, then a real trade:
+
+```bash
+python monitor.py trades/paper_spy_call.json --feed schwab
+```
+
+```bash
+python monitor.py trades/my_trade.json --feed schwab
+```
+
+## Rules (call; put is the mirror)
+
+| Status | Condition | Suggestion |
+|---|---|---|
+| GREEN | close > EMA8, EMA8 > EMA13 > EMA21, PSAR below price | trail stop to PSAR |
+| YELLOW | close < EMA8 but > EMA13 and > EMA21 | stop to nearer of EMA13/PSAR, consider taking half |
+| YELLOW (mixed) | anything else that isn't RED | hold stop |
+| RED | close < EMA21; or PSAR above price and close < EMA13; or original stop / T2 hit (sticky) | exit per plan |
+
+* Status is evaluated on closed candles of the trade timeframe at each 5-minute boundary.
+* Stops only tighten. A suggestion is applied only if it is closer to price and still on the safe side.
+* Levels (stop, trailing stop, T1, T2) are checked on every quote poll (20 s) and on candle wicks.
+  T1 hit gives a "take partial" alert. A trailing-stop hit alerts, and the alert re-arms when the stop tightens again.
+* Desktop notifications fire only on a status change or a level hit.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `monitor.py` | Entry point and main loop: polls, evaluates, alerts, persists state, feeds the web page, journals the exit |
+| `rules.py` | The status engine: GREEN/YELLOW/RED, stop suggestions, tighten-only logic, level-hit detection |
+| `indicators.py` | EMA (SMA-seeded) and Wilder Parabolic SAR (0.02/0.2) in pure Python |
+| `options_math.py` | Black-Scholes price/greeks/IV, and the "option value if the underlying hits X" estimate |
+| `report.py` | Opening report: value and P/L at each level, planned loss, max loss, R:R in $ |
+| `market.py` | Market panel: SPY/QQQ/IWM/DIA with the trade vs day/hour open, VIX direction |
+| `schwab_client.py` | Read-only Schwab client with the request guard (`GuardedSession`) |
+| `auth.py` | One-time OAuth login that saves `tokens.json` |
+| `feeds.py` | `SchwabFeed` (live) and `PaperFeed` (simulated session), behind one interface |
+| `notifier.py` | Desktop notifications (plyer / osascript / notify-send) plus `logs/alerts.log` |
+| `journal.py` | Appends one CSV row per closed trade to `journal/journal.csv` |
+| `web.py` + `static/index.html` | Local page on 127.0.0.1: chart, EMAs, PSAR dots, labelled level lines, panels, exit form |
+| `config.py` | All settings; reads `.env` |
+| `trades/*.json` | Trade files: two paper trades and `TEMPLATE.json` |
+| `tests/test_monitor.py` | Read-only guard, indicators, rules incl. put mirror, tighten-only, full paper sessions |
+
+Runtime output: `state/<id>.json` (trailing stop and history, resumed on restart so the stop never resets),
+`reports/<id>_opening.txt`, `logs/alerts.log`, `journal/journal.csv`.
+
+## Logging the exit
+
+When you close the position at your broker, record it in one of two ways:
+
+* Use the **Log exit** form on the page (leave the price blank to use the current mark).
+* Run this from the command line:
+
+```bash
+python monitor.py trades/my_trade.json --log-exit 14.20 --reason "T1 partial + trail"
+```
+
+## Caveats
+
+* Level option values reprice at current IV "as if hit now"; real fills drift with theta and IV.
+* Exchange holidays aren't detected (the loop just sees no new bars).
+* Schwab refresh tokens expire after 7 days. When that happens the monitor tells you to rerun `auth.py`.

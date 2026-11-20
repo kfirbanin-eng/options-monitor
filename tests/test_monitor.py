@@ -1,0 +1,194 @@
+"""Run:  python -m unittest discover -s tests -v"""
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import schwab_client
+from feeds import Bar, PaperFeed
+from indicators import ema, psar
+from monitor import Monitor
+from notifier import Notifier
+from options_math import bs_price
+from rules import GREEN, RED, YELLOW, check_levels, evaluate, tighten
+from schwab_client import ReadOnlyViolation, check_allowed
+from trade import Trade, load_trade, parse_contract
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def mk_trade(direction="call", **kw):
+    base = dict(ticker="SPY", contract_raw="SPY 2026-12-18 600 C", direction="call", contracts=2,
+                premium_paid=10, entry=100, stop=98, t1=103, t2=106)
+    if direction == "put":
+        base.update(contract_raw="SPY 2026-12-18 600 P", direction="put", stop=102, t1=97, t2=94)
+    base.update(kw)
+    return Trade(**base)
+
+
+def bars_from(closes, spread=0.1):
+    t0 = datetime(2026, 11, 19, 15, 0, tzinfo=timezone.utc)
+    out, prev = [], closes[0]
+    for i, c in enumerate(closes):
+        out.append(Bar(t0 + timedelta(minutes=5 * i), prev, max(prev, c) + spread, min(prev, c) - spread, c, 1, 5))
+        prev = c
+    return out
+
+
+def mirror(bars, pivot=200):
+    return [Bar(b.start, pivot - b.open, pivot - b.low, pivot - b.high, pivot - b.close, 1, 5) for b in bars]
+
+
+class ReadOnly(unittest.TestCase):
+    def test_market_data_get_allowed(self):
+        check_allowed("GET", "https://api.schwabapi.com/marketdata/v1/quotes?symbols=SPY")
+        check_allowed("POST", "https://api.schwabapi.com/v1/oauth/token")
+
+    def test_orders_and_accounts_blocked(self):
+        for m in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+            for path in ("/trader/v1/accounts/abc/orders", "/trader/v1/accounts/abc/orders/1",
+                         "/trader/v1/accounts", "/marketdata/../trader/v1/orders"):
+                if m == "GET" and path.startswith("/marketdata"):
+                    continue
+                with self.assertRaises(ReadOnlyViolation, msg=f"{m} {path}"):
+                    check_allowed(m, "https://api.schwabapi.com" + path)
+        for m in ("POST", "PUT", "DELETE"):
+            with self.assertRaises(ReadOnlyViolation):
+                check_allowed(m, "https://api.schwabapi.com/marketdata/v1/quotes")
+        with self.assertRaises(ReadOnlyViolation):
+            check_allowed("GET", "https://evil.example.com/marketdata/v1/quotes")
+
+    def test_session_enforces_guard_before_network(self):
+        s = schwab_client.GuardedSession()
+        with self.assertRaises(ReadOnlyViolation):
+            s.post("https://api.schwabapi.com/trader/v1/accounts/x/orders", json={})
+        with self.assertRaises(ReadOnlyViolation):
+            s.delete("https://api.schwabapi.com/trader/v1/accounts/x/orders/1")
+
+    def test_no_order_code_anywhere(self):
+        for py in ROOT.glob("*.py"):
+            src = py.read_text().lower()
+            for word in ("place_order", "replace_order", "cancel_order", "/orders\""):
+                self.assertNotIn(word, src, f"{py.name} mentions {word}")
+
+
+class Indicators(unittest.TestCase):
+    def test_ema(self):
+        e = ema([1, 2, 3, 4, 5, 6], 3)
+        self.assertEqual(e[:2], [None, None])
+        self.assertAlmostEqual(e[2], 2.0)
+        self.assertAlmostEqual(e[3], 3.0)
+        self.assertAlmostEqual(e[5], 5.0)
+
+    def test_psar_flips(self):
+        up = [100 + i for i in range(15)]
+        down = [114 - 2 * i for i in range(10)]
+        closes = up + down
+        sar, longs = psar([c + 0.5 for c in closes], [c - 0.5 for c in closes])
+        self.assertTrue(longs[10])
+        self.assertLess(sar[10], closes[10])
+        self.assertFalse(longs[-1])
+        self.assertGreater(sar[-1], closes[-1])
+
+
+class Rules(unittest.TestCase):
+    uptrend = [100 + 0.3 * i for i in range(40)]
+
+    def test_green_call(self):
+        ev = evaluate(mk_trade(), bars_from(self.uptrend))
+        self.assertEqual(ev.status, GREEN)
+        self.assertLess(ev.candidate_stop, ev.close)
+
+    def test_yellow_call(self):
+        closes = self.uptrend + [self.uptrend[-1] - 1.4]
+        ev = evaluate(mk_trade(), bars_from(closes, spread=0.05))
+        self.assertEqual(ev.status, YELLOW, ev.reasons)
+        self.assertIn("taking half", ev.action)
+
+    def test_red_call(self):
+        closes = self.uptrend + [self.uptrend[-1] - 4]
+        self.assertEqual(evaluate(mk_trade(), bars_from(closes)).status, RED)
+
+    def test_put_mirror(self):
+        for closes, want in ((self.uptrend, GREEN), (self.uptrend + [self.uptrend[-1] - 1.4], YELLOW),
+                             (self.uptrend + [self.uptrend[-1] - 4], RED)):
+            ev = evaluate(mk_trade("put"), mirror(bars_from(closes, spread=0.05)))
+            self.assertEqual(ev.status, want, ev.reasons)
+
+    def test_sticky_red(self):
+        ev = evaluate(mk_trade(), bars_from(self.uptrend), sticky_red="Original stop 98.00 hit")
+        self.assertEqual(ev.status, RED)
+
+    def test_stop_only_tightens(self):
+        self.assertEqual(tighten(1, 98, 99, 100), 99)      # call: higher = tighter
+        self.assertEqual(tighten(1, 99, 98.5, 100), 99)    # never widen
+        self.assertEqual(tighten(1, 99, 100.5, 100), 99)   # never through price
+        self.assertEqual(tighten(-1, 102, 101, 100), 101)  # put: lower = tighter
+        self.assertEqual(tighten(-1, 101, 101.5, 100), 101)
+        self.assertEqual(tighten(-1, 101, 99.5, 100), 101)
+
+    def test_levels(self):
+        t = mk_trade()
+        self.assertEqual(check_levels(t, 98, 101, 97.9), ["stop"])
+        self.assertEqual(check_levels(t, 99.5, 103.2, 99.4), ["trail", "t1"])
+        tp = mk_trade("put")
+        self.assertEqual(check_levels(tp, 102, 102.1, 96.0), ["stop", "t1"])
+        self.assertEqual(check_levels(tp, 102, 100, 93.9), ["t1", "t2"])
+
+
+class TradeAndMath(unittest.TestCase):
+    def test_contract_formats(self):
+        a = parse_contract("SPY 2026-12-18 600 C")
+        b = parse_contract("SPY   261218C00600000")
+        self.assertEqual(a, b)
+        self.assertEqual(a.schwab_symbol, "SPY   261218C00600000")
+
+    def test_validation(self):
+        with self.assertRaises(ValueError):
+            mk_trade(stop=101)                        # call stop above entry
+        with self.assertRaises(ValueError):
+            mk_trade(contract_raw="SPY 2026-12-18 600 P")  # call with a put contract
+        load_trade(ROOT / "trades" / "paper_spy_call.json")
+        load_trade(ROOT / "trades" / "paper_qqq_put.json")
+
+    def test_put_call_parity(self):
+        S, K, T, v, r = 600, 590, 0.1, 0.2, 0.04
+        import math
+        self.assertAlmostEqual(bs_price(S, K, T, v, r, "C") - bs_price(S, K, T, v, r, "P"),
+                               S - K * math.exp(-r * T), places=6)
+
+
+class PaperSession(unittest.TestCase):
+    def run_session(self, file):
+        trade = load_trade(ROOT / "trades" / file)
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            mon = Monitor(trade, PaperFeed(trade, speed=0), Notifier(desktop=False), state_dir=d,
+                          journal_path=d / "j.csv", report_dir=d, auto_exit=True)
+            trails = []
+            orig = mon.evaluate
+            mon.evaluate = lambda now: (orig(now), trails.append(mon.state["trail_stop"]))
+            mon.run()
+            return trade, mon, trails, (d / "j.csv").read_text()
+
+    def test_full_paper_sessions(self):
+        for f in ("paper_spy_call.json", "paper_qqq_put.json"):
+            trade, mon, trails, journal = self.run_session(f)
+            seen = {h["to"] for h in mon.state["status_history"]}
+            self.assertTrue({GREEN, YELLOW, RED} <= seen, seen)
+            self.assertIn("t1", mon.state["levels_hit"])
+            s = trade.side
+            self.assertTrue(all(s * (b - a) >= 0 for a, b in zip(trails, trails[1:])), "stop widened")
+            self.assertIn(trade.id, journal)
+            self.assertTrue(mon.done and mon.state["closed"])
+            alerts = mon.notifier.sent
+            self.assertTrue(all(("->" in a["title"]) or (" hit @ " in a["title"]) for a in alerts))
+            snap = mon.get_snapshot()
+            self.assertTrue(snap["chart"]["candles"] and snap["chart"]["psar"] and snap["market"])
+
+
+if __name__ == "__main__":
+    unittest.main()

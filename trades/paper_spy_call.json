@@ -1,0 +1,15 @@
+{
+  "id": "paper-spy-600c",
+  "paper": true,
+  "ticker": "SPY",
+  "contract": "SPY 2026-12-18 600 C",
+  "direction": "call",
+  "contracts": 2,
+  "premium_paid": 12.10,
+  "entry": 598.50,
+  "stop": 595.80,
+  "t1": 602.00,
+  "t2": 605.50,
+  "timeframe": "5m",
+  "notes": "Paper test: 5m EMA stack + PSAR long, entry on reclaim of 598.50"
+}
