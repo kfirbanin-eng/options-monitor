@@ -420,6 +420,8 @@ def build_feed(kind: str, trade, speed: float, seed: int, data: str | None = Non
                               config.SCHWAB_CALLBACK_URL)
         feed = SchwabFeed(client)
     option_price = option_price or ("model" if kind == "yahoo" else "feed")
+    if kind == "replay" and not feed.has_option:
+        option_price = "model"
     if option_price == "model":
         today = feed.clock.now().astimezone(config.ET).date()
         feed = ModelOptionFeed(feed, trade, entered_at=trade.entry_time(today), iv=trade.iv)

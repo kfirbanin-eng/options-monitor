@@ -282,12 +282,25 @@ class ReplayFeed:
         self.series = {sym: [b for seg in segs for b in self._mk(seg)] for sym, segs in d["symbols"].items()}
         if trade.ticker not in self.series:
             raise ValueError(f"Replay file has no bars for {trade.ticker}")
-        opt = d["option"]
-        if parse_contract(opt["symbol"]) != trade.contract:
-            raise ValueError(f"Replay file is for {opt['symbol']}, trade file is for {trade.contract.display}")
-        self.opt_bars = self._mk(opt)
+        opt = d.get("option")
+        self.has_option = bool(opt) and parse_contract(opt["symbol"]) == trade.contract
+        if opt and not self.has_option:
+            print(f"  Replay file has prices for {opt['symbol']}, not {trade.contract.display}: "
+                  f"the option price will be the model")
+        self.opt_bars = self._mk(opt) if self.has_option else []
         under = self.series[trade.ticker]
-        start = datetime.fromisoformat(d["start"]).astimezone(timezone.utc) if d.get("start") else under[-1].start
+        day = under[-1].start.astimezone(config.ET).date()
+        entry = trade.entry_time(day)
+        if entry is not None:
+            # start at the close of the candle that contains the entry time
+            step = timedelta(minutes=self.interval)
+            session = datetime.combine(day, time(9, 30), tzinfo=config.ET)
+            n = -(-int((entry - session).total_seconds()) // int(step.total_seconds()))
+            start = (session + max(n, 1) * step).astimezone(timezone.utc)
+        elif d.get("start"):
+            start = datetime.fromisoformat(d["start"]).astimezone(timezone.utc)
+        else:
+            start = datetime.combine(day, time(9, 35), tzinfo=config.ET).astimezone(timezone.utc)
         self.clock = SimClock(start, speed)
         self.end = under[-1].end
         self.label = f"Replay {under[-1].start.astimezone(config.ET):%Y-%m-%d} (recorded data)"
@@ -296,9 +309,12 @@ class ReplayFeed:
         o, c = seg["o"], seg["c"]
         h = seg.get("h") or [max(a, b) for a, b in zip(o, c)]
         lo = seg.get("l") or [min(a, b) for a, b in zip(o, c)]
-        t0 = datetime.fromtimestamp(seg["t0"], timezone.utc)
-        return [Bar(t0 + timedelta(minutes=self.interval * i), o[i], h[i], lo[i], c[i], 0, self.interval)
-                for i in range(len(c))]
+        if "t" in seg:      # explicit timestamps (recorded files may have gaps)
+            starts = [datetime.fromtimestamp(t, timezone.utc) for t in seg["t"]]
+        else:
+            t0 = datetime.fromtimestamp(seg["t0"], timezone.utc)
+            starts = [t0 + timedelta(minutes=self.interval * i) for i in range(len(c))]
+        return [Bar(starts[i], o[i], h[i], lo[i], c[i], 0, self.interval) for i in range(len(c))]
 
     def _closed(self, bars: list[Bar]) -> list[Bar]:
         now = self.clock.now()

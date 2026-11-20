@@ -398,5 +398,26 @@ class Reminders(unittest.TestCase):
         self.assertIn("What do you know to be true?", pushed[1][2])
 
 
+class ReplayWithoutOption(unittest.TestCase):
+    def test_no_option_prices_uses_model_and_starts_at_entry(self):
+        import json
+        from monitor import build_feed
+        d = json.loads((ROOT / "data" / "spy_2026-11-19.json").read_text())
+        d.pop("option"); d.pop("start")
+        seg = d["symbols"]["SPY"][1]
+        t0 = seg.pop("t0")
+        seg["t"] = [t0 + 300 * i for i in range(len(seg["c"]))]      # TradingView column format
+        trade = load_trade(ROOT / "trades" / "replay_spy_734p_2026-11-19.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "day.json"
+            f.write_text(json.dumps(d))
+            feed = build_feed("replay", trade, 0, 7, str(f))
+            self.assertIsInstance(feed, ModelOptionFeed)
+            import config
+            self.assertEqual(feed.clock.now().astimezone(config.ET).strftime("%H:%M"), "10:15")
+            q = feed.quotes([trade.contract.schwab_symbol])[trade.contract.schwab_symbol]
+            self.assertTrue(q.model and 2.5 < q.mark < 3.5)
+
+
 if __name__ == "__main__":
     unittest.main()
