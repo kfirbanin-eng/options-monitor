@@ -3,7 +3,11 @@
 // Direction "both": the candles show the trend either way (up = calls, down = puts).
 // Direction "call" / "put": the candles score that one trade, exactly like the monitor.
 // Alert-only: no orders.
-indicator("Options Monitor Status", overlay = true)
+// Pivots: the last 2 pivot highs and the last 2 pivot lows are always connected (any timeframe),
+// the formation is named (broadening / cone / channel), and a shooting star at the top line or a
+// hammer at the bottom line is marked and alerted. Pivots are confirmed after "bars right", so
+// nothing repaints.
+indicator("Options Monitor Status", overlay = true, max_lines_count = 50, max_labels_count = 300)
 
 dir      = input.string("both", "Direction", options = ["both", "call", "put"])
 stopLvl  = input.float(0.0, "Original stop (0 = off)")
@@ -61,3 +65,99 @@ alertcondition(status != status[1], "Status changed", "Trade status changed")
 // Trend alerts (use with Direction both)
 alertcondition(trend == 2 and trend[1] != 2, "Strong uptrend started", "EMA stack + PSAR aligned UP - call setup")
 alertcondition(trend == -2 and trend[1] != -2, "Strong downtrend started", "EMA stack + PSAR aligned DOWN - put setup")
+
+// ---------------------------------------------------------------------------
+// Pivots, range lines, formation, shooter / hammer setups
+// ---------------------------------------------------------------------------
+grpP      = "Pivots / setups"
+pvLeft    = input.int(5, "Pivot bars left", minval = 1, group = grpP)
+pvRight   = input.int(3, "Pivot bars right (confirmation delay)", minval = 1, group = grpP)
+tolAtr    = input.float(0.3, "Near-line tolerance (x ATR14)", minval = 0, step = 0.05, group = grpP)
+wickMul   = input.float(2.0, "Wick at least x body", minval = 1, step = 0.25, group = grpP)
+showLines = input.bool(true, "Draw pivot lines", group = grpP)
+
+ph = ta.pivothigh(high, pvLeft, pvRight)
+pl = ta.pivotlow(low, pvLeft, pvRight)
+
+var float h1 = na
+var float h2 = na
+var int hx1 = na
+var int hx2 = na
+var float l1 = na
+var float l2 = na
+var int lx1 = na
+var int lx2 = na
+
+if not na(ph)
+    h1 := h2
+    hx1 := hx2
+    h2 := ph
+    hx2 := bar_index - pvRight
+if not na(pl)
+    l1 := l2
+    lx1 := lx2
+    l2 := pl
+    lx2 := bar_index - pvRight
+
+// Line value projected to the current bar
+upNow = na(hx1) ? na : h2 + (h2 - h1) / (hx2 - hx1) * (bar_index - hx2)
+dnNow = na(lx1) ? na : l2 + (l2 - l1) / (lx2 - lx1) * (bar_index - lx2)
+
+// Formation from the last 2 highs and last 2 lows
+hh = h2 > h1
+hl = l2 > l1
+form = na(hx1) or na(lx1) ? "" : hh and not hl ? "Broadening" : not hh and hl ? "Cone (contracting)" : hh and hl ? "Rising channel" : "Falling channel"
+
+var line upL = na
+var line dnL = na
+if showLines and not na(ph) and not na(hx1)
+    line.delete(upL)
+    upL := line.new(hx1, h1, hx2, h2, extend = extend.right, color = color.new(color.red, 0), width = 2)
+if showLines and not na(pl) and not na(lx1)
+    line.delete(dnL)
+    dnL := line.new(lx1, l1, lx2, l2, extend = extend.right, color = color.new(color.green, 0), width = 2)
+
+var label formLbl = na
+if barstate.islast and form != "" and not na(upNow) and not na(dnNow)
+    label.delete(formLbl)
+    formLbl := label.new(bar_index + 3, (upNow + dnNow) / 2, form, style = label.style_label_left, color = color.new(color.blue, 70), textcolor = color.white, size = size.small)
+
+plotshape(not na(ph), "Pivot high", shape.circle, location.abovebar, color.new(color.red, 40), offset = -pvRight, size = size.tiny)
+plotshape(not na(pl), "Pivot low", shape.circle, location.belowbar, color.new(color.green, 40), offset = -pvRight, size = size.tiny)
+
+// Candles
+body    = math.abs(close - open)
+rng     = high - low
+upWick  = high - math.max(open, close)
+loWick  = math.min(open, close) - low
+bodyRef = math.max(body, rng * 0.05)
+shooter = rng > 0 and upWick >= wickMul * bodyRef and loWick <= bodyRef and math.max(open, close) <= low + rng * 0.4
+hammer  = rng > 0 and loWick >= wickMul * bodyRef and upWick <= bodyRef and math.min(open, close) >= high - rng * 0.4
+
+// At the top / bottom of the range: wick reaches the line (within tolerance) and price closes back inside
+tol   = tolAtr * ta.atr(14)
+atTop = not na(upNow) and high >= upNow - tol and close <= upNow + tol
+atBot = not na(dnNow) and low <= dnNow + tol and close >= dnNow - tol
+
+shootTop  = shooter and atTop
+hammerBot = hammer and atBot
+
+plotshape(shootTop, "Shooter at top", shape.triangledown, location.abovebar, color.red, text = "SS", textcolor = color.red, size = size.small)
+plotshape(hammerBot, "Hammer at bottom", shape.triangleup, location.belowbar, color.green, text = "H", textcolor = color.green, size = size.small)
+
+alertcondition(shootTop, "Shooter at top of range", "Shooting star at the top of the range on {{ticker}} {{interval}} at {{close}} - put setup")
+alertcondition(hammerBot, "Hammer at bottom of range", "Hammer at the bottom of the range on {{ticker}} {{interval}} at {{close}} - call setup")
+alertcondition(shootTop or hammerBot, "Range setup (shooter or hammer)", "Range setup on {{ticker}} {{interval}} at {{close}}")
+
+newForm = form != form[1] and form != ""
+alertcondition(newForm and form == "Broadening", "Broadening formation", "Broadening formation on {{ticker}} {{interval}}")
+alertcondition(newForm and form == "Cone (contracting)", "Cone formation", "Cone (contracting) formation on {{ticker}} {{interval}}")
+
+// One alert for everything: create an alert with condition "Any alert() function call"
+tfTxt = " on " + syminfo.ticker + " " + timeframe.period + " at " + str.tostring(close, format.mintick)
+if shootTop
+    alert("Shooting star at TOP of range (" + form + ")" + tfTxt + " - put setup", alert.freq_once_per_bar_close)
+if hammerBot
+    alert("Hammer at BOTTOM of range (" + form + ")" + tfTxt + " - call setup", alert.freq_once_per_bar_close)
+if newForm and (form == "Broadening" or form == "Cone (contracting)")
+    alert(form + " formation" + tfTxt, alert.freq_once_per_bar_close)
