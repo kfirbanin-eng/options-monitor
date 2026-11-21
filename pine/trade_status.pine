@@ -5,7 +5,7 @@
 // Alert-only: no orders.
 // Pivots: the last 2 pivot highs and the last 2 pivot lows are always connected (any timeframe),
 // the formation is named (broadening / cone / channel), and a shooting star at the top line or a
-// hammer at the bottom line (15/30/60 min candles, SPY/QQQ, trading hours only) is marked and alerted. Pivots are confirmed after "bars right", so
+// hammer at the bottom line (15/30/60 min candles, trading hours only) is marked and alerted. Pivots are confirmed after "bars right", so
 // nothing repaints.
 indicator("Options Monitor Status", overlay = true, max_lines_count = 50, max_labels_count = 300)
 
@@ -77,7 +77,7 @@ wickMul   = input.float(2.0, "Wick at least x body", minval = 1, step = 0.25, gr
 showLines = input.bool(true, "Draw pivot lines", group = grpP)
 
 grpS      = "Shooter / hammer setups"
-setupSyms = input.string("SPY,QQQ", "Only on these tickers (comma list)", group = grpS)
+setupSyms = input.string("ALL", "Tickers: ALL, or a comma list (e.g. SPY,QQQ)", group = grpS)
 use15     = input.bool(true, "Use 15 min candles", group = grpS)
 use30     = input.bool(true, "Use 30 min candles", group = grpS)
 use60     = input.bool(true, "Use 60 min candles", group = grpS)
@@ -158,9 +158,10 @@ alertcondition(newForm and form == "Broadening", "Broadening formation", "Broade
 alertcondition(newForm and form == "Cone (contracting)", "Cone formation", "Cone (contracting) formation on {{ticker}} {{interval}}")
 
 // ---------------------------------------------------------------------------
-// Shooter / hammer on 15 / 30 / 60 min, SPY and QQQ only, trading hours only
+// Shooter / hammer on 15 / 30 / 60 min, trading hours only (all tickers, or the ones listed)
 // ---------------------------------------------------------------------------
-symOk = str.contains("," + str.replace_all(setupSyms, " ", "") + ",", "," + syminfo.ticker + ",")
+symList = str.upper(str.replace_all(setupSyms, " ", ""))
+symOk = symList == "ALL" or symList == "" or str.contains("," + symList + ",", "," + syminfo.ticker + ",")
 tfOk(simple string tf) => timeframe.in_seconds() <= timeframe.in_seconds(tf)
 
 // Checked on the chart bar that closes together with the 15/30/60 candle, so the candle is final
