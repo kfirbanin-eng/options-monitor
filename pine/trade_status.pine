@@ -3,10 +3,10 @@
 // Direction "both": the candles show the trend either way (up = calls, down = puts).
 // Direction "call" / "put": the candles score that one trade, exactly like the monitor.
 // Alert-only: no orders.
-// Pivots: the last 2 pivot highs and the last 2 pivot lows are always connected (any timeframe),
-// the formation is named (broadening / cone / channel), and a shooting star at the top line or a
-// hammer at the bottom line (15/30/60 min candles, trading hours only) is marked and alerted. Pivots are confirmed after "bars right", so
-// nothing repaints.
+// Range: a line through the higher highs (resistance) and a line through the lower lows (support),
+// on any timeframe. A shooting star at the top line or a hammer at the bottom line
+// (15/30/60 min candles, trading hours only) is highlighted and alerted.
+// Pivots are confirmed after "bars right", so they never repaint.
 indicator("Options Monitor Status", overlay = true, max_lines_count = 50, max_labels_count = 300)
 
 dir      = input.string("both", "Direction", options = ["both", "call", "put"])
@@ -67,14 +67,15 @@ alertcondition(trend == 2 and trend[1] != 2, "Strong uptrend started", "EMA stac
 alertcondition(trend == -2 and trend[1] != -2, "Strong downtrend started", "EMA stack + PSAR aligned DOWN - put setup")
 
 // ---------------------------------------------------------------------------
-// Pivots, range lines, formation (chart timeframe)
+// Range: higher-highs line (resistance) and lower-lows line (support)
 // ---------------------------------------------------------------------------
-grpP      = "Pivots / setups"
+grpP      = "Range lines"
 pvLeft    = input.int(5, "Pivot bars left", minval = 1, group = grpP)
 pvRight   = input.int(3, "Pivot bars right (confirmation delay)", minval = 1, group = grpP)
-tolAtr    = input.float(0.3, "Near-line tolerance (x ATR14)", minval = 0, step = 0.05, group = grpP)
-wickMul   = input.float(2.0, "Wick at least x body", minval = 1, step = 0.25, group = grpP)
-showLines = input.bool(true, "Draw pivot lines", group = grpP)
+rangeLen  = input.int(150, "Look back (bars) for the highs / lows", minval = 20, group = grpP)
+showRange = input.bool(true, "Draw range lines (higher highs / lower lows)", group = grpP)
+rangeCol  = input.color(#2962FF, "Range line color", group = grpP)
+showLast2 = input.bool(false, "Also draw last-2-pivot lines", group = grpP)
 
 grpS      = "Shooter / hammer setups"
 setupSyms = input.string("ALL", "Tickers: ALL, or a comma list (e.g. SPY,QQQ)", group = grpS)
@@ -82,41 +83,66 @@ use15     = input.bool(true, "Use 15 min candles", group = grpS)
 use30     = input.bool(true, "Use 30 min candles", group = grpS)
 use60     = input.bool(true, "Use 60 min candles", group = grpS)
 rthSess   = input.session("0930-1600", "Trading hours (ET)", group = grpS)
+tolAtr    = input.float(0.3, "Near-line tolerance (x ATR14)", minval = 0, step = 0.05, group = grpS)
+wickMul   = input.float(2.0, "Wick at least x body", minval = 1, step = 0.25, group = grpS)
 
-// Last 2 pivot highs / lows of the timeframe this runs on
-pivots() =>
+// Pivots inside the look-back window.
+// Top line:    the highest pivot high (B) and the highest pivot high before it (A) -> through the higher highs.
+// Bottom line: the lowest pivot low (B) and the lowest pivot low before it (A)     -> through the lower lows.
+rangeLines() =>
     ph = ta.pivothigh(high, pvLeft, pvRight)
     pl = ta.pivotlow(low, pvLeft, pvRight)
-    var float h1 = na
-    var float h2 = na
-    var int hx1 = na
-    var int hx2 = na
-    var float l1 = na
-    var float l2 = na
-    var int lx1 = na
-    var int lx2 = na
+    var hp = array.new<float>()
+    var hx = array.new<int>()
+    var lp = array.new<float>()
+    var lx = array.new<int>()
     if not na(ph)
-        h1 := h2
-        hx1 := hx2
-        h2 := ph
-        hx2 := bar_index - pvRight
+        hp.push(ph)
+        hx.push(bar_index - pvRight)
     if not na(pl)
-        l1 := l2
-        lx1 := lx2
-        l2 := pl
-        lx2 := bar_index - pvRight
-    [ph, pl, h1, hx1, h2, hx2, l1, lx1, l2, lx2]
+        lp.push(pl)
+        lx.push(bar_index - pvRight)
+    while hx.size() > 0 and bar_index - hx.first() > rangeLen
+        hx.shift()
+        hp.shift()
+    while lx.size() > 0 and bar_index - lx.first() > rangeLen
+        lx.shift()
+        lp.shift()
+    int iHB = na
+    int iHA = na
+    int iLB = na
+    int iLA = na
+    for [i, v] in hp
+        if na(iHB) or v >= hp.get(iHB)
+            iHB := i
+    for [i, v] in hp
+        if not na(iHB) and i < iHB and (na(iHA) or v >= hp.get(iHA))
+            iHA := i
+    for [i, v] in lp
+        if na(iLB) or v <= lp.get(iLB)
+            iLB := i
+    for [i, v] in lp
+        if not na(iLB) and i < iLB and (na(iLA) or v <= lp.get(iLA))
+            iLA := i
+    float hA = na(iHA) ? na : hp.get(iHA)
+    int hxA = na(iHA) ? na : hx.get(iHA)
+    float hB = na(iHB) ? na : hp.get(iHB)
+    int hxB = na(iHB) ? na : hx.get(iHB)
+    float lA = na(iLA) ? na : lp.get(iLA)
+    int lxA = na(iLA) ? na : lx.get(iLA)
+    float lB = na(iLB) ? na : lp.get(iLB)
+    int lxB = na(iLB) ? na : lx.get(iLB)
+    [hA, hxA, hB, hxB, lA, lxA, lB, lxB]
 
-formName(float h1, float h2, float l1, float l2) =>
-    hh = h2 > h1
-    hl = l2 > l1
-    na(h1) or na(l1) ? "" : hh and not hl ? "Broadening" : not hh and hl ? "Cone (contracting)" : hh and hl ? "Rising channel" : "Falling channel"
+// Value of the line through (xa, a) and (xb, b) at the current bar
+lineAt(float a, int xa, float b, int xb) =>
+    na(a) or na(b) or xb == xa ? na : b + (b - a) / (xb - xa) * (bar_index - xb)
 
 // Shooting star at the top line / hammer at the bottom line, regular trading hours only
 rangeSetup() =>
-    [ph, pl, h1, hx1, h2, hx2, l1, lx1, l2, lx2] = pivots()
-    upNow = na(hx1) ? na : h2 + (h2 - h1) / (hx2 - hx1) * (bar_index - hx2)
-    dnNow = na(lx1) ? na : l2 + (l2 - l1) / (lx2 - lx1) * (bar_index - lx2)
+    [hA, hxA, hB, hxB, lA, lxA, lB, lxB] = rangeLines()
+    upNow = lineAt(hA, hxA, hB, hxB)
+    dnNow = lineAt(lA, lxA, lB, lxB)
     body    = math.abs(close - open)
     rng     = high - low
     upWick  = high - math.max(open, close)
@@ -128,34 +154,55 @@ rangeSetup() =>
     atTop = not na(upNow) and high >= upNow - tol and close <= upNow + tol
     atBot = not na(dnNow) and low <= dnNow + tol and close >= dnNow - tol
     inRth = not na(time(timeframe.period, rthSess, "America/New_York"))
-    [inRth and shooter and atTop, inRth and hammer and atBot, formName(h1, h2, l1, l2), high, low]
+    [inRth and shooter and atTop, inRth and hammer and atBot, high, low]
 
-// Chart-timeframe pivot lines and formation
-[cph, cpl, ch1, chx1, ch2, chx2, cl1, clx1, cl2, clx2] = pivots()
-upNowC = na(chx1) ? na : ch2 + (ch2 - ch1) / (chx2 - chx1) * (bar_index - chx2)
-dnNowC = na(clx1) ? na : cl2 + (cl2 - cl1) / (clx2 - clx1) * (bar_index - clx2)
-form = formName(ch1, ch2, cl1, cl2)
+// Chart timeframe: range lines, anchor dots, R / S price tags
+[rhA, rhxA, rhB, rhxB, rlA, rlxA, rlB, rlxB] = rangeLines()
+var line rUp = na
+var line rDn = na
+var marks = array.new<label>()
+if barstate.islast and showRange
+    line.delete(rUp)
+    line.delete(rDn)
+    for lb in marks
+        label.delete(lb)
+    marks.clear()
+    if not na(rhA)
+        rUp := line.new(rhxA, rhA, rhxB, rhB, extend = extend.right, color = rangeCol, width = 2)
+        marks.push(label.new(rhxA, rhA, "", style = label.style_circle, color = rangeCol, size = size.tiny))
+        marks.push(label.new(rhxB, rhB, "", style = label.style_circle, color = rangeCol, size = size.tiny))
+        rNow = lineAt(rhA, rhxA, rhB, rhxB)
+        marks.push(label.new(bar_index + 2, rNow, "R " + str.tostring(rNow, format.mintick), style = label.style_label_left, color = rangeCol, textcolor = color.white, size = size.small))
+    if not na(rlA)
+        rDn := line.new(rlxA, rlA, rlxB, rlB, extend = extend.right, color = rangeCol, width = 2)
+        marks.push(label.new(rlxA, rlA, "", style = label.style_circle, color = rangeCol, size = size.tiny))
+        marks.push(label.new(rlxB, rlB, "", style = label.style_circle, color = rangeCol, size = size.tiny))
+        sNow = lineAt(rlA, rlxA, rlB, rlxB)
+        marks.push(label.new(bar_index + 2, sNow, "S " + str.tostring(sNow, format.mintick), style = label.style_label_left, color = rangeCol, textcolor = color.white, size = size.small))
 
-var line upL = na
-var line dnL = na
-if showLines and not na(cph) and not na(chx1)
-    line.delete(upL)
-    upL := line.new(chx1, ch1, chx2, ch2, extend = extend.right, color = color.new(color.red, 0), width = 2)
-if showLines and not na(cpl) and not na(clx1)
-    line.delete(dnL)
-    dnL := line.new(clx1, cl1, clx2, cl2, extend = extend.right, color = color.new(color.green, 0), width = 2)
-
-var label formLbl = na
-if barstate.islast and form != "" and not na(upNowC) and not na(dnNowC)
-    label.delete(formLbl)
-    formLbl := label.new(bar_index + 3, (upNowC + dnNowC) / 2, form, style = label.style_label_left, color = color.new(color.blue, 70), textcolor = color.white, size = size.small)
-
+// Pivot dots, and (optional) the plain last-2-pivot lines
+cph = ta.pivothigh(high, pvLeft, pvRight)
+cpl = ta.pivotlow(low, pvLeft, pvRight)
 plotshape(not na(cph), "Pivot high", shape.circle, location.abovebar, color.new(color.red, 40), offset = -pvRight, size = size.tiny)
 plotshape(not na(cpl), "Pivot low", shape.circle, location.belowbar, color.new(color.green, 40), offset = -pvRight, size = size.tiny)
 
-newForm = form != form[1] and form != ""
-alertcondition(newForm and form == "Broadening", "Broadening formation", "Broadening formation on {{ticker}} {{interval}}")
-alertcondition(newForm and form == "Cone (contracting)", "Cone formation", "Cone (contracting) formation on {{ticker}} {{interval}}")
+p2hx1 = ta.valuewhen(not na(cph), bar_index - pvRight, 1)
+p2hx2 = ta.valuewhen(not na(cph), bar_index - pvRight, 0)
+p2h1  = ta.valuewhen(not na(cph), cph, 1)
+p2h2  = ta.valuewhen(not na(cph), cph, 0)
+p2lx1 = ta.valuewhen(not na(cpl), bar_index - pvRight, 1)
+p2lx2 = ta.valuewhen(not na(cpl), bar_index - pvRight, 0)
+p2l1  = ta.valuewhen(not na(cpl), cpl, 1)
+p2l2  = ta.valuewhen(not na(cpl), cpl, 0)
+var line l2Up = na
+var line l2Dn = na
+if barstate.islast and showLast2
+    line.delete(l2Up)
+    line.delete(l2Dn)
+    if not na(p2hx1)
+        l2Up := line.new(p2hx1, p2h1, p2hx2, p2h2, extend = extend.right, color = color.gray, style = line.style_dotted)
+    if not na(p2lx1)
+        l2Dn := line.new(p2lx1, p2l1, p2lx2, p2l2, extend = extend.right, color = color.gray, style = line.style_dotted)
 
 // ---------------------------------------------------------------------------
 // Shooter / hammer on 15 / 30 / 60 min, trading hours only (all tickers, or the ones listed)
@@ -166,9 +213,9 @@ tfOk(simple string tf) => timeframe.in_seconds() <= timeframe.in_seconds(tf)
 
 // Checked on the chart bar that closes together with the 15/30/60 candle, so the candle is final
 // and the alert fires the moment it closes (no repaint once the bar is confirmed).
-[ss15, hb15, f15, hi15, lo15] = request.security(syminfo.tickerid, "15", rangeSetup())
-[ss30, hb30, f30, hi30, lo30] = request.security(syminfo.tickerid, "30", rangeSetup())
-[ss60, hb60, f60, hi60, lo60] = request.security(syminfo.tickerid, "60", rangeSetup())
+[ss15, hb15, hi15, lo15] = request.security(syminfo.tickerid, "15", rangeSetup())
+[ss30, hb30, hi30, lo30] = request.security(syminfo.tickerid, "30", rangeSetup())
+[ss60, hb60, hi60, lo60] = request.security(syminfo.tickerid, "60", rangeSetup())
 
 on15 = symOk and use15 and tfOk("15") and time_close == time_close("15")
 on30 = symOk and use30 and tfOk("30") and time_close == time_close("30")
@@ -214,8 +261,6 @@ if anyHammer
 // One alert for everything: create an alert with condition "Any alert() function call"
 px = " at " + str.tostring(close, format.mintick)
 if anyShooter
-    alert("Shooting star at TOP of range on " + syminfo.ticker + " " + tfList(sh15, sh30, sh60) + "(" + (sh60 ? f60 : sh30 ? f30 : f15) + ")" + px + " - put setup", alert.freq_once_per_bar_close)
+    alert("Shooting star at TOP of range on " + syminfo.ticker + " " + tfList(sh15, sh30, sh60) + px + " - put setup", alert.freq_once_per_bar_close)
 if anyHammer
-    alert("Hammer at BOTTOM of range on " + syminfo.ticker + " " + tfList(hm15, hm30, hm60) + "(" + (hm60 ? f60 : hm30 ? f30 : f15) + ")" + px + " - call setup", alert.freq_once_per_bar_close)
-if newForm and (form == "Broadening" or form == "Cone (contracting)")
-    alert(form + " formation on " + syminfo.ticker + " " + timeframe.period + px, alert.freq_once_per_bar_close)
+    alert("Hammer at BOTTOM of range on " + syminfo.ticker + " " + tfList(hm15, hm30, hm60) + px + " - call setup", alert.freq_once_per_bar_close)
