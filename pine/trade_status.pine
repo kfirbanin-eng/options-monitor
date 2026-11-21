@@ -1,30 +1,48 @@
 //@version=6
 // Mirror of rules.py: EMA 8/13/21 + Parabolic SAR (0.02/0.2) -> GREEN / YELLOW / RED.
-// Call rules; puts are the mirror (side = -1). Alert-only: no orders.
+// Direction "both": the candles show the trend either way (up = calls, down = puts).
+// Direction "call" / "put": the candles score that one trade, exactly like the monitor.
+// Alert-only: no orders.
 indicator("Options Monitor Status", overlay = true)
 
-dir      = input.string("call", "Direction", options = ["call", "put"])
+dir      = input.string("both", "Direction", options = ["both", "call", "put"])
 stopLvl  = input.float(0.0, "Original stop (0 = off)")
 t1Lvl    = input.float(0.0, "T1 (0 = off)")
 t2Lvl    = input.float(0.0, "T2 (0 = off)")
-s = dir == "call" ? 1 : -1
 
 e8  = ta.ema(close, 8)
 e13 = ta.ema(close, 13)
 e21 = ta.ema(close, 21)
 sar = ta.sar(0.02, 0.02, 0.2)
 
-above(a, b) => s * (a - b) > 0
-sarWith = s > 0 ? sar < close : sar > close
+// Status of a trade on side s (+1 call, -1 put): 2 GREEN, 1 YELLOW fading, 0.5 YELLOW mixed, 0 RED
+statusFor(float s, bool useLevels) =>
+    sarWith = s > 0 ? sar < close : sar > close
+    levelRed = useLevels and (stopLvl > 0 and s * ((s > 0 ? low : high) - stopLvl) <= 0 or t2Lvl > 0 and s * ((s > 0 ? high : low) - t2Lvl) >= 0)
+    red   = s * (close - e21) <= 0 or (not sarWith and s * (close - e13) <= 0) or levelRed
+    green = not red and s * (close - e8) > 0 and s * (e8 - e13) > 0 and s * (e13 - e21) > 0 and sarWith
+    fade  = not red and not green and s * (close - e8) <= 0 and s * (close - e13) > 0 and s * (close - e21) > 0
+    st = red ? 0.0 : green ? 2.0 : fade ? 1.0 : 0.5
+    cand = green ? sar : fade ? (sarWith ? (s > 0 ? math.max(e13, sar) : math.min(e13, sar)) : e13) : na
+    [st, cand]
 
-levelRed = stopLvl > 0 and s * ((s > 0 ? low : high) - stopLvl) <= 0 or t2Lvl > 0 and s * ((s > 0 ? high : low) - t2Lvl) >= 0
-red    = not above(close, e21) or (not sarWith and not above(close, e13)) or levelRed
-green  = not red and above(close, e8) and above(e8, e13) and above(e13, e21) and sarWith
-yfade  = not red and not green and not above(close, e8) and above(close, e13) and above(close, e21)
+[upSt, upCand] = statusFor(1.0, dir == "call")
+[dnSt, dnCand] = statusFor(-1.0, dir == "put")
 
-// 2 = GREEN, 1 = YELLOW (fading), 0.5 = YELLOW (mixed), 0 = RED
-status = red ? 0.0 : green ? 2.0 : yfade ? 1.0 : 0.5
-cand = green ? sar : yfade ? (sarWith ? (s > 0 ? math.max(e13, sar) : math.min(e13, sar)) : e13) : na
+// Trend either way: +2 strong up, +1 up fading, -2 strong down, -1 down fading, 0 mixed / chop
+trend = upSt == 2 ? 2.0 : dnSt == 2 ? -2.0 : upSt == 1 ? 1.0 : dnSt == 1 ? -1.0 : 0.0
+
+float status = na
+float cand = na
+color bc = na
+if dir == "both"
+    status := trend
+    cand := trend > 0 ? upCand : trend < 0 ? dnCand : na
+    bc := trend == 2 ? color.green : trend == 1 ? color.new(color.green, 60) : trend == -2 ? color.red : trend == -1 ? color.new(color.red, 60) : color.gray
+else
+    status := dir == "call" ? upSt : dnSt
+    cand := dir == "call" ? upCand : dnCand
+    bc := status == 0 ? color.red : status == 2 ? color.green : color.yellow
 
 plot(e8,  "EMA8",  color.new(color.aqua, 0))
 plot(e13, "EMA13", color.new(color.orange, 0))
@@ -35,7 +53,11 @@ plot(cand, "Candidate stop", color.yellow, style = plot.style_circles)
 plot(stopLvl > 0 ? stopLvl : na, "Stop", color.red, style = plot.style_linebr)
 plot(t1Lvl > 0 ? t1Lvl : na, "T1", color.lime, style = plot.style_linebr)
 plot(t2Lvl > 0 ? t2Lvl : na, "T2", color.green, style = plot.style_linebr)
-barcolor(red ? color.red : green ? color.green : color.yellow)
+barcolor(bc)
 
-alertcondition(red and not red[1], "Turned RED", "Trade status RED - exit per plan")
+// Trade alerts (use with Direction call / put)
+alertcondition(status == 0 and status[1] != 0, "Turned RED", "Trade status RED - exit per plan")
 alertcondition(status != status[1], "Status changed", "Trade status changed")
+// Trend alerts (use with Direction both)
+alertcondition(trend == 2 and trend[1] != 2, "Strong uptrend started", "EMA stack + PSAR aligned UP - call setup")
+alertcondition(trend == -2 and trend[1] != -2, "Strong downtrend started", "EMA stack + PSAR aligned DOWN - put setup")
