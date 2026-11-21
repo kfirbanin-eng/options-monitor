@@ -1,0 +1,375 @@
+//@version=6
+// Strat + Range: real-time alerts when a Strat reversal triggers at the edge of the range.
+// Alert-only: it never places orders.
+//
+// Strat candles (vs the previous candle): 1 = inside, 2U = takes the high only, 2D = takes the low only,
+// 3 = outside (takes both).
+// Range (broadening formation): top line through the higher highs, bottom line through the lower lows.
+// Each line touches the extreme pivot and is the tangent to all pivots in the look-back window,
+// so no pivot pokes through it: a real support / resistance line.
+//
+// LONG setups (at the BOTTOM of the range), trigger = price takes out the setup candle's HIGH:
+//   2D-1-2U, 3-1-2U, 1-2D-2U (RevStrat), 2D-2U, 3-2U, Hammer-2U
+// SHORT setups (at the TOP of the range), trigger = price takes out the setup candle's LOW:
+//   2U-1-2D, 3-1-2D, 1-2U-2D (RevStrat), 2U-2D, 3-2D, Shooter-2D
+// READY  = the setup candle just closed at the edge (fires at the close, gives the trigger price).
+// TRIGGER = price breaks the trigger in real time (fires immediately, does not wait for the close).
+// Stop = the other side of the setup candle. T1 = previous candle's high/low. T2 = the opposite range line.
+indicator("Strat Range Setups", overlay = true, max_lines_count = 100, max_labels_count = 300)
+
+// ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+grpT    = "Setup timeframes"
+use15   = input.bool(true, "15 min", group = grpT)
+use30   = input.bool(true, "30 min", group = grpT)
+use60   = input.bool(true, "60 min", group = grpT)
+useD    = input.bool(false, "Daily", group = grpT)
+rthSess = input.session("0930-1600", "Trading hours (ET)", group = grpT)
+
+grpF     = "Filters"
+edgeOnly = input.bool(true, "Only at the edge of the range (top / bottom)", group = grpF)
+edgePct  = input.float(15, "Edge zone (% of the range height)", minval = 1, maxval = 50, group = grpF) / 100
+tolAtr   = input.float(0.3, "Touch tolerance (x ATR14)", minval = 0, step = 0.05, group = grpF)
+inclCont = input.bool(false, "Also continuations (2U-1-2U, 2D-1-2D)", group = grpF)
+needFtfc = input.bool(false, "Require timeframe continuity (D and 60 with the trade)", group = grpF)
+wickMul  = input.float(2.0, "Hammer / shooter: wick at least x body", minval = 1, step = 0.25, group = grpF)
+cooldown = input.int(3, "Cooldown after a trigger (candles of that timeframe)", minval = 1, group = grpF)
+
+grpR      = "Range lines"
+lineTfIn  = input.string("Chart", "Draw the range of", options = ["Chart", "15", "30", "60", "D"], group = grpR)
+pvLeft    = input.int(5, "Pivot bars left", minval = 1, group = grpR)
+pvRight   = input.int(3, "Pivot bars right (confirmation delay)", minval = 1, group = grpR)
+rangeLen  = input.int(150, "Look back (bars) for the highs / lows", minval = 20, group = grpR)
+rangeCol  = input.color(#2962FF, "Range line color", group = grpR)
+
+grpV      = "Display"
+showNums  = input.bool(true, "Strat number on each candle", group = grpV)
+showReady = input.bool(true, "Show READY markers", group = grpV)
+showTable = input.bool(true, "Timeframe continuity table", group = grpV)
+
+LONG_C  = #00E5FF
+SHORT_C = #FF00FF
+
+// ---------------------------------------------------------------------------
+// Building blocks (they run in whatever timeframe they are requested on)
+// ---------------------------------------------------------------------------
+// 1 inside, 2 = 2U, -2 = 2D, 3 outside
+barType(float h, float l, float ph, float pl) =>
+    na(ph) ? 0 : h > ph and l < pl ? 3 : h > ph ? 2 : l < pl ? -2 : 1
+
+typeName(int t) =>
+    t == 1 ? "1" : t == 2 ? "2U" : t == -2 ? "2D" : t == 3 ? "3" : "?"
+
+// Range lines from the pivots of the last rangeLen bars.
+// Top: B = highest pivot high, A = the earlier pivot giving the flattest line to B (all other highs are below it).
+// Bottom: B = lowest pivot low, A = the earlier pivot giving the flattest line to B (all other lows are above it).
+// If B is the oldest pivot in the window, the line is flat at B (pure resistance / support).
+rangeLines() =>
+    ph = ta.pivothigh(high, pvLeft, pvRight)
+    pl = ta.pivotlow(low, pvLeft, pvRight)
+    var hp = array.new<float>()
+    var hx = array.new<int>()
+    var ht = array.new<int>()
+    var lp = array.new<float>()
+    var lx = array.new<int>()
+    var lt = array.new<int>()
+    if not na(ph)
+        hp.push(ph)
+        hx.push(bar_index - pvRight)
+        ht.push(time[pvRight])
+    if not na(pl)
+        lp.push(pl)
+        lx.push(bar_index - pvRight)
+        lt.push(time[pvRight])
+    while hx.size() > 0 and bar_index - hx.first() > rangeLen
+        hx.shift()
+        hp.shift()
+        ht.shift()
+    while lx.size() > 0 and bar_index - lx.first() > rangeLen
+        lx.shift()
+        lp.shift()
+        lt.shift()
+    int iHB = na
+    for [i, v] in hp
+        if na(iHB) or v >= hp.get(iHB)
+            iHB := i
+    int iHA = na
+    float bestH = na
+    if not na(iHB)
+        for [i, v] in hp
+            if i < iHB
+                s = (hp.get(iHB) - v) / (hx.get(iHB) - hx.get(i))
+                if na(bestH) or s < bestH
+                    bestH := s
+                    iHA := i
+    int iLB = na
+    for [i, v] in lp
+        if na(iLB) or v <= lp.get(iLB)
+            iLB := i
+    int iLA = na
+    float bestL = na
+    if not na(iLB)
+        for [i, v] in lp
+            if i < iLB
+                s = (lp.get(iLB) - v) / (lx.get(iLB) - lx.get(i))
+                if na(bestL) or s > bestL
+                    bestL := s
+                    iLA := i
+    float hB  = na(iHB) ? na : hp.get(iHB)
+    int   hxB = na(iHB) ? na : hx.get(iHB)
+    int   htB = na(iHB) ? na : ht.get(iHB)
+    float hA  = na(iHB) ? na : na(iHA) ? hB : hp.get(iHA)
+    int   hxA = na(iHB) ? na : na(iHA) ? hxB - 1 : hx.get(iHA)
+    int   htA = na(iHB) ? na : na(iHA) ? htB : ht.get(iHA)
+    float lB  = na(iLB) ? na : lp.get(iLB)
+    int   lxB = na(iLB) ? na : lx.get(iLB)
+    int   ltB = na(iLB) ? na : lt.get(iLB)
+    float lA  = na(iLB) ? na : na(iLA) ? lB : lp.get(iLA)
+    int   lxA = na(iLB) ? na : na(iLA) ? lxB - 1 : lx.get(iLA)
+    int   ltA = na(iLB) ? na : na(iLA) ? ltB : lt.get(iLA)
+    top = na(hA) ? na : hB + (hB - hA) / (hxB - hxA) * (bar_index - hxB)
+    bot = na(lA) ? na : lB + (lB - lA) / (lxB - lxA) * (bar_index - lxB)
+    [top, bot, hA, htA, hB, htB, lA, ltA, lB, ltB]
+
+// Everything about the last CLOSED candle of this timeframe (used with lookahead_on => no repaint)
+setupData() =>
+    [top, bot, hA, htA, hB, htB, lA, ltA, lB, ltB] = rangeLines()
+    t = barType(high, low, high[1], low[1])
+    body    = math.abs(close - open)
+    rng     = high - low
+    upWick  = high - math.max(open, close)
+    loWick  = math.min(open, close) - low
+    bodyRef = math.max(body, rng * 0.05)
+    sho = rng > 0 and upWick >= wickMul * bodyRef and loWick <= bodyRef and math.max(open, close) <= low + rng * 0.4
+    ham = rng > 0 and loWick >= wickMul * bodyRef and upWick <= bodyRef and math.min(open, close) >= high - rng * 0.4
+    inRth = timeframe.isdaily or not na(time(timeframe.period, rthSess, "America/New_York"))
+    [t[1], t[2], high[1], low[1], high[2], low[2], top[1], bot[1], ham[1], sho[1], ta.atr(14)[1], inRth[1]]
+
+// ---------------------------------------------------------------------------
+// Timeframe continuity: is price above (green) or below (red) the open of each timeframe
+// ---------------------------------------------------------------------------
+oM  = request.security(syminfo.tickerid, "M", open, lookahead = barmerge.lookahead_on)
+oW  = request.security(syminfo.tickerid, "W", open, lookahead = barmerge.lookahead_on)
+oD  = request.security(syminfo.tickerid, "D", open, lookahead = barmerge.lookahead_on)
+o60 = request.security(syminfo.tickerid, "60", open, lookahead = barmerge.lookahead_on)
+o30 = request.security(syminfo.tickerid, "30", open, lookahead = barmerge.lookahead_on)
+o15 = request.security(syminfo.tickerid, "15", open, lookahead = barmerge.lookahead_on)
+arrow(float o) => na(o) ? "·" : close > o ? "↑" : close < o ? "↓" : "="
+ftfcTxt = "FTFC M" + arrow(oM) + " W" + arrow(oW) + " D" + arrow(oD) + " 60" + arrow(o60)
+ftfcLong  = close > oD and close > o60
+ftfcShort = close < oD and close < o60
+
+// ---------------------------------------------------------------------------
+// One setup timeframe: pattern on the closed candles + real-time trigger on the chart
+// ---------------------------------------------------------------------------
+rthNow = timeframe.isdaily or not na(time(timeframe.period, rthSess, "America/New_York"))
+
+stratTF(simple string tf, bool use) =>
+    [t1, t2, h1, l1, h2, l2, top1, bot1, ham1, sho1, atr1, rth1] = request.security(syminfo.tickerid, tf, setupData(), lookahead = barmerge.lookahead_on)
+    active = use and timeframe.in_seconds() <= timeframe.in_seconds(tf)
+    newBar = timeframe.change(tf)
+    // running high / low of the current candle of this timeframe, from the chart bars (real time)
+    var float ch = na
+    var float cl = na
+    if newBar or na(ch)
+        ch := high
+        cl := low
+    else
+        ch := math.max(ch, high)
+        cl := math.min(cl, low)
+    // where the setup candle sits in the range
+    tol  = tolAtr * nz(atr1)
+    rngH = top1 - bot1
+    nearBot = not na(bot1) and (math.min(l1, l2) <= bot1 + tol or (rngH > 0 and (l1 - bot1) / rngH <= edgePct))
+    nearTop = not na(top1) and (math.max(h1, h2) >= top1 - tol or (rngH > 0 and (top1 - h1) / rngH <= edgePct))
+    // long pattern names (trigger above h1)
+    string lp = ""
+    if t1 == 1
+        lp := t2 == -2 ? "2D-1-2U" : t2 == 3 ? "3-1-2U" : t2 == 2 and inclCont ? "2U-1-2U" : ""
+    else if t1 == -2
+        lp := t2 == 1 ? "1-2D-2U RevStrat" : "2D-2U"
+    else if t1 == 3
+        lp := "3-2U"
+    if ham1
+        lp := lp == "" ? "Hammer-2U" : lp + " + Hammer"
+    // short pattern names (trigger below l1)
+    string sp = ""
+    if t1 == 1
+        sp := t2 == 2 ? "2U-1-2D" : t2 == 3 ? "3-1-2D" : t2 == -2 and inclCont ? "2D-1-2D" : ""
+    else if t1 == 2
+        sp := t2 == 1 ? "1-2U-2D RevStrat" : "2U-2D"
+    else if t1 == 3
+        sp := "3-2D"
+    if sho1
+        sp := sp == "" ? "Shooter-2D" : sp + " + Shooter"
+    // cooldown: after a trigger, wait this many candles of this timeframe before the same direction fires again
+    var int sinceL = 1000
+    var int sinceS = 1000
+    if newBar
+        sinceL += 1
+        sinceS += 1
+    okL = active and rth1 and lp != "" and (not edgeOnly or nearBot) and (not needFtfc or ftfcLong)
+    okS = active and rth1 and sp != "" and (not edgeOnly or nearTop) and (not needFtfc or ftfcShort)
+    // READY only for real setup candles (inside, outside, RevStrat, hammer / shooter); a plain 2D / 2U
+    // is not announced in advance, it only alerts when it actually reverses (trigger)
+    readyL = okL and newBar and not (t1 == -2 and t2 != 1 and not ham1)
+    readyS = okS and newBar and not (t1 == 2 and t2 != 1 and not sho1)
+    trigL  = okL and sinceL >= cooldown and rthNow and ch > h1 and (newBar or ch[1] <= h1)
+    trigS  = okS and sinceS >= cooldown and rthNow and cl < l1 and (newBar or cl[1] >= l1)
+    if trigL
+        sinceL := 0
+    if trigS
+        sinceS := 0
+    [readyL, readyS, trigL, trigS, lp, sp, h1, l1, h2, l2, top1, bot1, nearBot, nearTop, typeName(t1), typeName(t2)]
+
+[rL15, rS15, tL15, tS15, lp15, sp15, h1_15, l1_15, h2_15, l2_15, top15, bot15, nb15, nt15, ty1_15, ty2_15] = stratTF("15", use15)
+[rL30, rS30, tL30, tS30, lp30, sp30, h1_30, l1_30, h2_30, l2_30, top30, bot30, nb30, nt30, ty1_30, ty2_30] = stratTF("30", use30)
+[rL60, rS60, tL60, tS60, lp60, sp60, h1_60, l1_60, h2_60, l2_60, top60, bot60, nb60, nt60, ty1_60, ty2_60] = stratTF("60", use60)
+[rLD,  rSD,  tLD,  tSD,  lpD,  spD,  h1_D,  l1_D,  h2_D,  l2_D,  topD,  botD,  nbD,  ntD,  ty1_D,  ty2_D]  = stratTF("D", useD)
+
+// ---------------------------------------------------------------------------
+// Messages, markers and alerts
+// ---------------------------------------------------------------------------
+fmt(float v) => na(v) ? "-" : str.tostring(v, format.mintick)
+edgeWord(bool nb, bool nt, bool isLong) => isLong ? (nb ? "at BOTTOM of range" : "mid-range") : (nt ? "at TOP of range" : "mid-range")
+
+longMsg(string tf, string pat, float h1, float l1, float h2, float top, bool nb, string kind) =>
+    t1 = h2 > h1 ? h2 : na
+    kind + " LONG " + tf + ": " + pat + " " + edgeWord(nb, false, true) + " on " + syminfo.ticker +
+     " | trigger above " + fmt(h1) + " | stop " + fmt(l1) + " | T1 " + fmt(t1) + " | T2 (top) " + fmt(top) + " | " + ftfcTxt
+
+shortMsg(string tf, string pat, float l1, float h1, float l2, float bot, bool nt, string kind) =>
+    t1 = l2 < l1 ? l2 : na
+    kind + " SHORT " + tf + ": " + pat + " " + edgeWord(false, nt, false) + " on " + syminfo.ticker +
+     " | trigger below " + fmt(l1) + " | stop " + fmt(h1) + " | T1 " + fmt(t1) + " | T2 (bottom) " + fmt(bot) + " | " + ftfcTxt
+
+// Build the combined text for this chart bar (several timeframes can fire together)
+string trigText = ""
+string readyText = ""
+if tL60
+    trigText += longMsg("60m", lp60, h1_60, l1_60, h2_60, top60, nb60, "🟢 TRIGGER") + "\n"
+if tL30
+    trigText += longMsg("30m", lp30, h1_30, l1_30, h2_30, top30, nb30, "🟢 TRIGGER") + "\n"
+if tL15
+    trigText += longMsg("15m", lp15, h1_15, l1_15, h2_15, top15, nb15, "🟢 TRIGGER") + "\n"
+if tLD
+    trigText += longMsg("D", lpD, h1_D, l1_D, h2_D, topD, nbD, "🟢 TRIGGER") + "\n"
+if tS60
+    trigText += shortMsg("60m", sp60, l1_60, h1_60, l2_60, bot60, nt60, "🔴 TRIGGER") + "\n"
+if tS30
+    trigText += shortMsg("30m", sp30, l1_30, h1_30, l2_30, bot30, nt30, "🔴 TRIGGER") + "\n"
+if tS15
+    trigText += shortMsg("15m", sp15, l1_15, h1_15, l2_15, bot15, nt15, "🔴 TRIGGER") + "\n"
+if tSD
+    trigText += shortMsg("D", spD, l1_D, h1_D, l2_D, botD, ntD, "🔴 TRIGGER") + "\n"
+if rL60
+    readyText += longMsg("60m", lp60, h1_60, l1_60, h2_60, top60, nb60, "READY") + "\n"
+if rL30
+    readyText += longMsg("30m", lp30, h1_30, l1_30, h2_30, top30, nb30, "READY") + "\n"
+if rL15
+    readyText += longMsg("15m", lp15, h1_15, l1_15, h2_15, top15, nb15, "READY") + "\n"
+if rLD
+    readyText += longMsg("D", lpD, h1_D, l1_D, h2_D, topD, nbD, "READY") + "\n"
+if rS60
+    readyText += shortMsg("60m", sp60, l1_60, h1_60, l2_60, bot60, nt60, "READY") + "\n"
+if rS30
+    readyText += shortMsg("30m", sp30, l1_30, h1_30, l2_30, bot30, nt30, "READY") + "\n"
+if rS15
+    readyText += shortMsg("15m", sp15, l1_15, h1_15, l2_15, bot15, nt15, "READY") + "\n"
+if rSD
+    readyText += shortMsg("D", spD, l1_D, h1_D, l2_D, botD, ntD, "READY") + "\n"
+
+anyTrigL  = tL15 or tL30 or tL60 or tLD
+anyTrigS  = tS15 or tS30 or tS60 or tSD
+anyReadyL = rL15 or rL30 or rL60 or rLD
+anyReadyS = rS15 or rS30 or rS60 or rSD
+
+tfs(bool a, bool b, bool c, bool d) => (a ? "15 " : "") + (b ? "30 " : "") + (c ? "60 " : "") + (d ? "D " : "")
+patOf(bool a, bool b, bool c, bool d, string pa, string pb, string pc, string pd) => d ? pd : c ? pc : b ? pb : pa
+
+// Triggers: big, impossible to miss
+barcolor(anyTrigL ? LONG_C : anyTrigS ? SHORT_C : na)
+bgcolor(anyTrigL ? color.new(LONG_C, 65) : anyTrigS ? color.new(SHORT_C, 65) : na)
+if anyTrigL
+    label.new(bar_index, low, "▲ " + patOf(tL15, tL30, tL60, tLD, lp15, lp30, lp60, lpD) + "\n" + tfs(tL15, tL30, tL60, tLD),
+     style = label.style_label_up, yloc = yloc.belowbar, color = LONG_C, textcolor = color.black, size = size.large,
+     tooltip = trigText)
+if anyTrigS
+    label.new(bar_index, high, "▼ " + patOf(tS15, tS30, tS60, tSD, sp15, sp30, sp60, spD) + "\n" + tfs(tS15, tS30, tS60, tSD),
+     style = label.style_label_down, yloc = yloc.abovebar, color = SHORT_C, textcolor = color.white, size = size.large,
+     tooltip = trigText)
+
+// Ready: small heads-up with the trigger price
+if showReady and anyReadyL
+    label.new(bar_index, low, "ready ↑ " + tfs(rL15, rL30, rL60, rLD), style = label.style_label_up, yloc = yloc.belowbar,
+     color = color.new(LONG_C, 60), textcolor = color.black, size = size.small, tooltip = readyText)
+if showReady and anyReadyS
+    label.new(bar_index, high, "ready ↓ " + tfs(rS15, rS30, rS60, rSD), style = label.style_label_down, yloc = yloc.abovebar,
+     color = color.new(SHORT_C, 60), textcolor = color.white, size = size.small, tooltip = readyText)
+
+// Alerts. Easiest: ONE alert with condition "Any alert() function call" (gets the full message).
+if anyTrigL or anyTrigS
+    alert(trigText, alert.freq_once_per_bar)
+if anyReadyL or anyReadyS
+    alert(readyText, alert.freq_once_per_bar)
+alertcondition(anyTrigL, "Strat LONG trigger", "Strat LONG trigger on {{ticker}} at {{close}}")
+alertcondition(anyTrigS, "Strat SHORT trigger", "Strat SHORT trigger on {{ticker}} at {{close}}")
+alertcondition(anyReadyL or anyReadyS, "Strat setup READY", "Strat setup ready on {{ticker}}")
+
+// Data window values (also used for testing)
+plotshape(anyTrigL, "Long trigger", shape.triangleup, location.belowbar, LONG_C, display = display.data_window)
+plotshape(anyTrigS, "Short trigger", shape.triangledown, location.abovebar, SHORT_C, display = display.data_window)
+plotshape(anyReadyL, "Long ready", shape.circle, location.belowbar, LONG_C, display = display.data_window)
+plotshape(anyReadyS, "Short ready", shape.circle, location.abovebar, SHORT_C, display = display.data_window)
+
+// ---------------------------------------------------------------------------
+// Strat number on each chart candle
+// ---------------------------------------------------------------------------
+ct = barType(high, low, high[1], low[1])
+plotshape(showNums and ct == 1, "Strat 1", shape.labeldown, location.abovebar, color.new(color.gray, 100), text = "1", textcolor = color.gray, size = size.tiny)
+plotshape(showNums and ct == 2, "Strat 2U", shape.labeldown, location.abovebar, color.new(color.gray, 100), text = "2U", textcolor = color.teal, size = size.tiny)
+plotshape(showNums and ct == -2, "Strat 2D", shape.labeldown, location.abovebar, color.new(color.gray, 100), text = "2D", textcolor = color.maroon, size = size.tiny)
+plotshape(showNums and ct == 3, "Strat 3", shape.labeldown, location.abovebar, color.new(color.gray, 100), text = "3", textcolor = color.orange, size = size.tiny)
+
+// ---------------------------------------------------------------------------
+// Range lines of the chosen timeframe, with R / S tags and where price sits in the range
+// ---------------------------------------------------------------------------
+lineTf = lineTfIn == "Chart" ? timeframe.period : timeframe.in_seconds(lineTfIn) < timeframe.in_seconds() ? timeframe.period : lineTfIn
+[rTop, rBot, rhA, rhtA, rhB, rhtB, rlA, rltA, rlB, rltB] = request.security(syminfo.tickerid, lineTf, rangeLines())
+
+var line rUp = na
+var line rDn = na
+var marks = array.new<label>()
+if barstate.islast
+    line.delete(rUp)
+    line.delete(rDn)
+    for lb in marks
+        label.delete(lb)
+    marks.clear()
+    if not na(rhA)
+        rUp := line.new(rhtA, rhA, rhtB, rhB, xloc = xloc.bar_time, extend = extend.right, color = rangeCol, width = 2)
+        marks.push(label.new(rhtA, rhA, "", xloc = xloc.bar_time, style = label.style_circle, color = rangeCol, size = size.tiny))
+        marks.push(label.new(rhtB, rhB, "", xloc = xloc.bar_time, style = label.style_circle, color = rangeCol, size = size.tiny))
+        marks.push(label.new(bar_index + 2, rTop, "R " + fmt(rTop), style = label.style_label_left, color = rangeCol, textcolor = color.white, size = size.small))
+    if not na(rlA)
+        rDn := line.new(rltA, rlA, rltB, rlB, xloc = xloc.bar_time, extend = extend.right, color = rangeCol, width = 2)
+        marks.push(label.new(rltA, rlA, "", xloc = xloc.bar_time, style = label.style_circle, color = rangeCol, size = size.tiny))
+        marks.push(label.new(rltB, rlB, "", xloc = xloc.bar_time, style = label.style_circle, color = rangeCol, size = size.tiny))
+        marks.push(label.new(bar_index + 2, rBot, "S " + fmt(rBot), style = label.style_label_left, color = rangeCol, textcolor = color.white, size = size.small))
+
+// Continuity table + range position
+var table tb = table.new(position.top_right, 7, 2, border_width = 1)
+cell(int col, string name, float o) =>
+    c = na(o) ? color.gray : close > o ? color.new(color.green, 20) : close < o ? color.new(color.red, 20) : color.gray
+    table.cell(tb, col, 0, name, text_color = color.white, bgcolor = c, text_size = size.small)
+if showTable and barstate.islast
+    cell(0, "M", oM)
+    cell(1, "W", oW)
+    cell(2, "D", oD)
+    cell(3, "60", o60)
+    cell(4, "30", o30)
+    cell(5, "15", o15)
+    pos = rTop > rBot ? (close - rBot) / (rTop - rBot) : na
+    posTxt = na(pos) ? "range: -" : "range " + str.tostring(math.round(pos * 100)) + "%" + (pos <= edgePct ? " BOTTOM" : pos >= 1 - edgePct ? " TOP" : "")
+    table.cell(tb, 6, 0, posTxt, text_color = color.white, bgcolor = na(pos) ? color.gray : pos <= edgePct ? color.new(LONG_C, 20) : pos >= 1 - edgePct ? color.new(SHORT_C, 20) : color.new(color.gray, 20), text_size = size.small)

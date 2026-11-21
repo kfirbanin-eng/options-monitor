@@ -87,8 +87,8 @@ tolAtr    = input.float(0.3, "Near-line tolerance (x ATR14)", minval = 0, step =
 wickMul   = input.float(2.0, "Wick at least x body", minval = 1, step = 0.25, group = grpS)
 
 // Pivots inside the look-back window.
-// Top line:    the highest pivot high (B) and the highest pivot high before it (A) -> through the higher highs.
-// Bottom line: the lowest pivot low (B) and the lowest pivot low before it (A)     -> through the lower lows.
+// Top line:    through the highest pivot high, rising through the higher highs, no high above it.
+// Bottom line: through the lowest pivot low, falling through the lower lows, no low below it.
 rangeLines() =>
     ph = ta.pivothigh(high, pvLeft, pvRight)
     pl = ta.pivotlow(low, pvLeft, pvRight)
@@ -108,30 +108,42 @@ rangeLines() =>
     while lx.size() > 0 and bar_index - lx.first() > rangeLen
         lx.shift()
         lp.shift()
+    // B = the extreme pivot; A = the earlier pivot that gives the flattest line to B, so every other pivot
+    // in the window stays on the inside of the line (a true tangent). No earlier pivot: flat line at B.
     int iHB = na
-    int iHA = na
-    int iLB = na
-    int iLA = na
     for [i, v] in hp
         if na(iHB) or v >= hp.get(iHB)
             iHB := i
-    for [i, v] in hp
-        if not na(iHB) and i < iHB and (na(iHA) or v >= hp.get(iHA))
-            iHA := i
+    int iHA = na
+    float bestH = na
+    if not na(iHB)
+        for [i, v] in hp
+            if i < iHB
+                sl = (hp.get(iHB) - v) / (hx.get(iHB) - hx.get(i))
+                if na(bestH) or sl < bestH
+                    bestH := sl
+                    iHA := i
+    int iLB = na
     for [i, v] in lp
         if na(iLB) or v <= lp.get(iLB)
             iLB := i
-    for [i, v] in lp
-        if not na(iLB) and i < iLB and (na(iLA) or v <= lp.get(iLA))
-            iLA := i
-    float hA = na(iHA) ? na : hp.get(iHA)
-    int hxA = na(iHA) ? na : hx.get(iHA)
+    int iLA = na
+    float bestL = na
+    if not na(iLB)
+        for [i, v] in lp
+            if i < iLB
+                sl = (lp.get(iLB) - v) / (lx.get(iLB) - lx.get(i))
+                if na(bestL) or sl > bestL
+                    bestL := sl
+                    iLA := i
     float hB = na(iHB) ? na : hp.get(iHB)
     int hxB = na(iHB) ? na : hx.get(iHB)
-    float lA = na(iLA) ? na : lp.get(iLA)
-    int lxA = na(iLA) ? na : lx.get(iLA)
+    float hA = na(iHB) ? na : na(iHA) ? hB : hp.get(iHA)
+    int hxA = na(iHB) ? na : na(iHA) ? hxB - 1 : hx.get(iHA)
     float lB = na(iLB) ? na : lp.get(iLB)
     int lxB = na(iLB) ? na : lx.get(iLB)
+    float lA = na(iLB) ? na : na(iLA) ? lB : lp.get(iLA)
+    int lxA = na(iLB) ? na : na(iLA) ? lxB - 1 : lx.get(iLA)
     [hA, hxA, hB, hxB, lA, lxA, lB, lxB]
 
 // Value of the line through (xa, a) and (xb, b) at the current bar
