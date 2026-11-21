@@ -48,7 +48,7 @@ else
     cand := dir == "call" ? upCand : dnCand
     bc := status == 0 ? color.red : status == 2 ? color.green : color.yellow
 
-plot(e8,  "EMA8",  color.new(color.aqua, 0))
+plot(e8,  "EMA8",  color.new(color.blue, 0))
 plot(e13, "EMA13", color.new(color.orange, 0))
 plot(e21, "EMA21", color.new(color.purple, 0))
 plot(sar, "PSAR",  color.gray, style = plot.style_cross)
@@ -128,7 +128,7 @@ rangeSetup() =>
     atTop = not na(upNow) and high >= upNow - tol and close <= upNow + tol
     atBot = not na(dnNow) and low <= dnNow + tol and close >= dnNow - tol
     inRth = not na(time(timeframe.period, rthSess, "America/New_York"))
-    [inRth and shooter and atTop, inRth and hammer and atBot, formName(h1, h2, l1, l2)]
+    [inRth and shooter and atTop, inRth and hammer and atBot, formName(h1, h2, l1, l2), high, low]
 
 // Chart-timeframe pivot lines and formation
 [cph, cpl, ch1, chx1, ch2, chx2, cl1, clx1, cl2, clx2] = pivots()
@@ -166,9 +166,9 @@ tfOk(simple string tf) => timeframe.in_seconds() <= timeframe.in_seconds(tf)
 
 // Checked on the chart bar that closes together with the 15/30/60 candle, so the candle is final
 // and the alert fires the moment it closes (no repaint once the bar is confirmed).
-[ss15, hb15, f15] = request.security(syminfo.tickerid, "15", rangeSetup())
-[ss30, hb30, f30] = request.security(syminfo.tickerid, "30", rangeSetup())
-[ss60, hb60, f60] = request.security(syminfo.tickerid, "60", rangeSetup())
+[ss15, hb15, f15, hi15, lo15] = request.security(syminfo.tickerid, "15", rangeSetup())
+[ss30, hb30, f30, hi30, lo30] = request.security(syminfo.tickerid, "30", rangeSetup())
+[ss60, hb60, f60, hi60, lo60] = request.security(syminfo.tickerid, "60", rangeSetup())
 
 on15 = symOk and use15 and tfOk("15") and time_close == time_close("15")
 on30 = symOk and use30 and tfOk("30") and time_close == time_close("30")
@@ -181,12 +181,16 @@ hm15 = on15 and hb15
 hm30 = on30 and hb30
 hm60 = on60 and hb60
 
-plotshape(sh15, "Shooter 15m", shape.triangledown, location.abovebar, color.red, text = "SS 15", textcolor = color.red, size = size.small)
-plotshape(sh30, "Shooter 30m", shape.triangledown, location.abovebar, color.red, text = "SS 30", textcolor = color.red, size = size.normal)
-plotshape(sh60, "Shooter 60m", shape.triangledown, location.abovebar, color.maroon, text = "SS 60", textcolor = color.maroon, size = size.large)
-plotshape(hm15, "Hammer 15m", shape.triangleup, location.belowbar, color.green, text = "H 15", textcolor = color.green, size = size.small)
-plotshape(hm30, "Hammer 30m", shape.triangleup, location.belowbar, color.green, text = "H 30", textcolor = color.green, size = size.normal)
-plotshape(hm60, "Hammer 60m", shape.triangleup, location.belowbar, color.teal, text = "H 60", textcolor = color.teal, size = size.large)
+// Setups must pop: magenta = shooter at the TOP, cyan = hammer at the BOTTOM.
+// Candle, background stripe and a big label. No other part of the script uses these two colors.
+SHOOT_C = #FF00FF
+HAMMER_C = #00E5FF
+plotshape(sh15, "Shooter 15m", shape.triangledown, location.abovebar, SHOOT_C, display = display.data_window)
+plotshape(sh30, "Shooter 30m", shape.triangledown, location.abovebar, SHOOT_C, display = display.data_window)
+plotshape(sh60, "Shooter 60m", shape.triangledown, location.abovebar, SHOOT_C, display = display.data_window)
+plotshape(hm15, "Hammer 15m", shape.triangleup, location.belowbar, HAMMER_C, display = display.data_window)
+plotshape(hm30, "Hammer 30m", shape.triangleup, location.belowbar, HAMMER_C, display = display.data_window)
+plotshape(hm60, "Hammer 60m", shape.triangleup, location.belowbar, HAMMER_C, display = display.data_window)
 
 anyShooter = sh15 or sh30 or sh60
 anyHammer  = hm15 or hm30 or hm60
@@ -194,9 +198,21 @@ alertcondition(anyShooter, "Shooter at top of range (15/30/60)", "Shooting star 
 alertcondition(anyHammer, "Hammer at bottom of range (15/30/60)", "Hammer at the bottom of the range on {{ticker}} - call setup")
 alertcondition(anyShooter or anyHammer, "Range setup (shooter or hammer)", "Range setup on {{ticker}} at {{close}}")
 
+tfList(bool a, bool b, bool c) => (a ? "15m " : "") + (b ? "30m " : "") + (c ? "60m " : "")
+
+setupColor = anyShooter ? SHOOT_C : anyHammer ? HAMMER_C : na
+barcolor(setupColor)
+bgcolor(anyShooter ? color.new(SHOOT_C, 70) : anyHammer ? color.new(HAMMER_C, 70) : na)
+
+if anyShooter
+    yTop = math.max(sh15 ? hi15 : high, sh30 ? hi30 : high, sh60 ? hi60 : high)
+    label.new(bar_index, yTop, "▼ SHOOTER at TOP\n" + tfList(sh15, sh30, sh60), yloc = yloc.price, style = label.style_label_down, color = SHOOT_C, textcolor = color.white, size = size.large)
+if anyHammer
+    yBot = math.min(hm15 ? lo15 : low, hm30 ? lo30 : low, hm60 ? lo60 : low)
+    label.new(bar_index, yBot, "▲ HAMMER at BOTTOM\n" + tfList(hm15, hm30, hm60), yloc = yloc.price, style = label.style_label_up, color = HAMMER_C, textcolor = color.black, size = size.large)
+
 // One alert for everything: create an alert with condition "Any alert() function call"
 px = " at " + str.tostring(close, format.mintick)
-tfList(bool a, bool b, bool c) => (a ? "15m " : "") + (b ? "30m " : "") + (c ? "60m " : "")
 if anyShooter
     alert("Shooting star at TOP of range on " + syminfo.ticker + " " + tfList(sh15, sh30, sh60) + "(" + (sh60 ? f60 : sh30 ? f30 : f15) + ")" + px + " - put setup", alert.freq_once_per_bar_close)
 if anyHammer
