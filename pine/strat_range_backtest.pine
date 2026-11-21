@@ -1,0 +1,138 @@
+//@version=6
+// Backtest of "Strat Range Setups" on the chart timeframe (run it on 15m, 30m or 60m).
+// Setup candle closes at the edge of the range -> stop order at the trigger for the NEXT candle only
+// (long: 1 tick above the setup high, short: 1 tick below the setup low). Not filled -> cancelled.
+// Stop = other side of the setup candle. Target = choose below. Everything is flat at the close (16:00 ET).
+// Tested on the underlying, 100 shares per trade, 1 tick slippage.
+strategy("Strat Range Backtest", overlay = true, initial_capital = 100000, default_qty_type = strategy.fixed,
+ default_qty_value = 100, slippage = 1, commission_type = strategy.commission.cash_per_order, commission_value = 0)
+
+dirIn    = input.string("Both", "Direction", options = ["Both", "Long", "Short"])
+patIn    = input.string("All", "Pattern", options = ["All", "2-1-2", "3-1-2", "RevStrat", "2-2", "3-2", "Hammer/Shooter"])
+tgtIn    = input.string("T1", "Target", options = ["T1", "T2", "1R", "2R"], tooltip = "T1 = previous candle's high/low, T2 = opposite range line, R = risk multiples")
+edgeOnly = input.bool(true, "Only at the edge of the range")
+edgePct  = input.float(15, "Edge zone (% of range)", minval = 1, maxval = 50) / 100
+tolAtr   = input.float(0.3, "Touch tolerance (x ATR14)", minval = 0, step = 0.05)
+wickMul  = input.float(2.0, "Hammer / shooter: wick at least x body", minval = 1, step = 0.25)
+rthSess  = input.session("0930-1600", "Trading hours (ET)")
+pvLeft   = input.int(5, "Pivot bars left", minval = 1)
+pvRight  = input.int(3, "Pivot bars right", minval = 1)
+rangeLen = input.int(150, "Look back (bars) for the highs / lows", minval = 20)
+
+barType(float h, float l, float ph, float pl) =>
+    na(ph) ? 0 : h > ph and l < pl ? 3 : h > ph ? 2 : l < pl ? -2 : 1
+
+// Same range lines as the alert script (tangent from the extreme pivot)
+rangeLines() =>
+    ph = ta.pivothigh(high, pvLeft, pvRight)
+    pl = ta.pivotlow(low, pvLeft, pvRight)
+    var hp = array.new<float>()
+    var hx = array.new<int>()
+    var lp = array.new<float>()
+    var lx = array.new<int>()
+    if not na(ph)
+        hp.push(ph)
+        hx.push(bar_index - pvRight)
+    if not na(pl)
+        lp.push(pl)
+        lx.push(bar_index - pvRight)
+    while hx.size() > 0 and bar_index - hx.first() > rangeLen
+        hx.shift()
+        hp.shift()
+    while lx.size() > 0 and bar_index - lx.first() > rangeLen
+        lx.shift()
+        lp.shift()
+    int iHB = na
+    for [i, v] in hp
+        if na(iHB) or v >= hp.get(iHB)
+            iHB := i
+    int iHA = na
+    float bestH = na
+    if not na(iHB)
+        for [i, v] in hp
+            if i < iHB
+                sl = (hp.get(iHB) - v) / (hx.get(iHB) - hx.get(i))
+                if na(bestH) or sl < bestH
+                    bestH := sl
+                    iHA := i
+    int iLB = na
+    for [i, v] in lp
+        if na(iLB) or v <= lp.get(iLB)
+            iLB := i
+    int iLA = na
+    float bestL = na
+    if not na(iLB)
+        for [i, v] in lp
+            if i < iLB
+                sl = (lp.get(iLB) - v) / (lx.get(iLB) - lx.get(i))
+                if na(bestL) or sl > bestL
+                    bestL := sl
+                    iLA := i
+    float top = na
+    float bot = na
+    if not na(iHB)
+        float hB = hp.get(iHB)
+        top := na(iHA) ? hB : hB + bestH * (bar_index - hx.get(iHB))
+    if not na(iLB)
+        float lB = lp.get(iLB)
+        bot := na(iLA) ? lB : lB + bestL * (bar_index - lx.get(iLB))
+    [top, bot]
+
+[top, bot] = rangeLines()
+t  = barType(high, low, high[1], low[1])
+t2 = t[1]
+body    = math.abs(close - open)
+rng     = high - low
+upWick  = high - math.max(open, close)
+loWick  = math.min(open, close) - low
+bodyRef = math.max(body, rng * 0.05)
+sho = rng > 0 and upWick >= wickMul * bodyRef and loWick <= bodyRef and math.max(open, close) <= low + rng * 0.4
+ham = rng > 0 and loWick >= wickMul * bodyRef and upWick <= bodyRef and math.min(open, close) >= high - rng * 0.4
+
+tol  = tolAtr * ta.atr(14)
+rngH = top - bot
+nearBot = not na(bot) and (math.min(low, low[1]) <= bot + tol or (rngH > 0 and (low - bot) / rngH <= edgePct))
+nearTop = not na(top) and (math.max(high, high[1]) >= top - tol or (rngH > 0 and (top - high) / rngH <= edgePct))
+
+// Pattern of the setup candle (the one that just closed)
+string catL = t == 1 ? (t2 == -2 ? "2-1-2" : t2 == 3 ? "3-1-2" : "") : t == -2 ? (t2 == 1 ? "RevStrat" : "2-2") : t == 3 ? "3-2" : ""
+string catS = t == 1 ? (t2 == 2 ? "2-1-2" : t2 == 3 ? "3-1-2" : "") : t == 2 ? (t2 == 1 ? "RevStrat" : "2-2") : t == 3 ? "3-2" : ""
+patOk(string cat, bool wick) =>
+    patIn == "All" ? (cat != "" or wick) : patIn == "Hammer/Shooter" ? wick : cat == patIn
+
+inRth  = not na(time(timeframe.period, rthSess, "America/New_York"))
+closeM = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
+lastOfDay = closeM >= 16 * 60
+
+longOk  = dirIn != "Short" and inRth and not lastOfDay and patOk(catL, ham) and (not edgeOnly or nearBot)
+shortOk = dirIn != "Long" and inRth and not lastOfDay and patOk(catS, sho) and (not edgeOnly or nearTop)
+
+// An unfilled trigger only lives for one candle
+if strategy.position_size == 0
+    strategy.cancel("L")
+    strategy.cancel("S")
+
+tick = syminfo.mintick
+if strategy.position_size == 0 and longOk
+    entry = high + tick
+    stop  = low - tick
+    risk  = entry - stop
+    tgt = tgtIn == "T1" ? (high[1] > entry ? high[1] : entry + risk) : tgtIn == "T2" ? (top > entry ? top : entry + risk) : tgtIn == "1R" ? entry + risk : entry + 2 * risk
+    strategy.entry("L", strategy.long, stop = entry, comment = catL == "" ? "Hammer" : catL)
+    strategy.exit("XL", "L", stop = stop, limit = tgt)
+else if strategy.position_size == 0 and shortOk
+    entry = low - tick
+    stop  = high + tick
+    risk  = stop - entry
+    tgt = tgtIn == "T1" ? (low[1] < entry ? low[1] : entry - risk) : tgtIn == "T2" ? (bot < entry ? bot : entry - risk) : tgtIn == "1R" ? entry - risk : entry - 2 * risk
+    strategy.entry("S", strategy.short, stop = entry, comment = catS == "" ? "Shooter" : catS)
+    strategy.exit("XS", "S", stop = stop, limit = tgt)
+
+// Flat at the close (day trade, like 0DTE options)
+if lastOfDay
+    strategy.cancel("L")
+    strategy.cancel("S")
+    strategy.close_all(comment = "EOD")
+
+plot(top, "Range top", color.new(#2962FF, 0), style = plot.style_linebr)
+plot(bot, "Range bottom", color.new(#2962FF, 0), style = plot.style_linebr)
