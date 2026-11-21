@@ -1,0 +1,38 @@
+//@version=6
+// Mirror of rules.py: EMA 8/13/21 + Parabolic SAR (0.02/0.2) -> GREEN / YELLOW / RED.
+// Call rules; puts are the mirror (side = -1). Alert-only: no orders.
+indicator("Options Monitor Status", overlay = true)
+
+dir      = input.string("call", "Direction", options = ["call", "put"])
+stopLvl  = input.float(0.0, "Original stop (0 = off)")
+t1Lvl    = input.float(0.0, "T1 (0 = off)")
+t2Lvl    = input.float(0.0, "T2 (0 = off)")
+s = dir == "call" ? 1 : -1
+
+e8  = ta.ema(close, 8)
+e13 = ta.ema(close, 13)
+e21 = ta.ema(close, 21)
+sar = ta.sar(0.02, 0.02, 0.2)
+
+above(a, b) => s * (a - b) > 0
+sarWith = s > 0 ? sar < close : sar > close
+
+levelRed = stopLvl > 0 and s * ((s > 0 ? low : high) - stopLvl) <= 0 or t2Lvl > 0 and s * ((s > 0 ? high : low) - t2Lvl) >= 0
+red    = not above(close, e21) or (not sarWith and not above(close, e13)) or levelRed
+green  = not red and above(close, e8) and above(e8, e13) and above(e13, e21) and sarWith
+yfade  = not red and not green and not above(close, e8) and above(close, e13) and above(close, e21)
+
+// 2 = GREEN, 1 = YELLOW (fading), 0.5 = YELLOW (mixed), 0 = RED
+status = red ? 0.0 : green ? 2.0 : yfade ? 1.0 : 0.5
+cand = green ? sar : yfade ? (sarWith ? (s > 0 ? math.max(e13, sar) : math.min(e13, sar)) : e13) : na
+
+plot(e8,  "EMA8",  color.new(color.aqua, 0))
+plot(e13, "EMA13", color.new(color.orange, 0))
+plot(e21, "EMA21", color.new(color.purple, 0))
+plot(sar, "PSAR",  color.gray, style = plot.style_cross)
+plot(status, "Status", display = display.data_window)
+plot(cand, "Candidate stop", color.yellow, style = plot.style_circles)
+barcolor(red ? color.red : green ? color.green : color.yellow)
+
+alertcondition(red and not red[1], "Turned RED", "Trade status RED - exit per plan")
+alertcondition(status != status[1], "Status changed", "Trade status changed")
